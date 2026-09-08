@@ -1,3 +1,4 @@
+mod compose;
 mod containers;
 mod contexts;
 mod disk;
@@ -10,6 +11,7 @@ use eframe::egui;
 use crate::app::App;
 use crate::ui_elements;
 
+pub use compose::compose_panel;
 pub use containers::containers_panel;
 pub use contexts::contexts_panel;
 pub use disk::disk_panel;

@@ -5,4 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror.workspace = true
+docker-client = { path = "../docker-client" }
+serde.workspace = true
+serde_json.workspace = true

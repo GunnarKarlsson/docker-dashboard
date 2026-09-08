@@ -204,6 +204,9 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
             PanelId::Containers => {
                 panels::containers_panel(ui, self.app, pane.icon());
             }
+            PanelId::Compose => {
+                panels::compose_panel(ui, self.app, pane.icon());
+            }
             PanelId::Logs => {
                 let mut show_timestamps = self.app.logs_show_timestamps;
                 let mut auto_scroll = self.app.logs_auto_scroll;

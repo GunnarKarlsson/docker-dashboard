@@ -1,20 +1,23 @@
-//! Docker Compose CLI client (stub).
+//! Docker Compose CLI client.
 
-use thiserror::Error;
+mod snapshot;
 
-/// Placeholder error type for Compose commands.
-#[derive(Debug, Error)]
-pub enum ComposeError {
-    #[error("compose client is not implemented yet")]
-    Unimplemented,
-}
+pub use snapshot::{ComposeProject, ComposeService, ProjectStatus};
+
+use docker_client::{Docker, DockerError, Transport};
+use snapshot::load_project;
 
 /// Entry point for running `docker compose` commands.
 pub struct Compose;
 
 impl Compose {
-    /// Placeholder availability check. Real Compose probing lands in a later step.
-    pub fn check_available() -> Result<(), ComposeError> {
-        Ok(())
+    /// Verifies that `docker compose` is runnable on the local host.
+    pub fn check_available() -> Result<(), DockerError> {
+        Docker::run(&Transport::Local, &["compose", "version"]).map(|_| ())
+    }
+
+    /// Discovers a Compose project (preferring `dd-mock`) and loads its services.
+    pub fn snapshot(transport: &Transport) -> Result<Option<ComposeProject>, DockerError> {
+        load_project(transport)
     }
 }

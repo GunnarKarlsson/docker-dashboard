@@ -13,14 +13,16 @@ pub fn containers_panel(
     app: &mut App,
     icon: Option<egui::ImageSource<'static>>,
 ) {
+    let container_count = app.containers.as_ref().map(|containers| containers.len());
+    let mut clicked_id = None;
     ui_elements::panel_with_header_actions(
         ui,
         icon,
         "Containers",
         |ui| {
-            if let Some(containers) = &app.containers {
+            if let Some(count) = container_count {
                 ui.label(
-                    egui::RichText::new(format!("{}", containers.len()))
+                    egui::RichText::new(format!("{count}"))
                         .color(theme::colors::FOOTER_TEXT)
                         .small(),
                 );
@@ -54,7 +56,7 @@ pub fn containers_panel(
             }
 
             let selected_id = app.selected_container.clone();
-            let mut clicked_id = None;
+            let selected_service = app.selected_compose_service.clone();
             egui::ScrollArea::both()
                 .id_salt(egui::Id::new("containers_scroll"))
                 .auto_shrink([false, false])
@@ -77,20 +79,20 @@ pub fn containers_panel(
                             ui.end_row();
 
                             for container in visible {
-                                let selected =
-                                    selected_id.as_deref() == Some(container.id.as_str());
+                                let selected = selected_id.as_deref()
+                                    == Some(container.id.as_str())
+                                    || container.compose_service() == selected_service.as_deref();
                                 if container_row(ui, container, selected) {
                                     clicked_id = Some(container.id.clone());
                                 }
                             }
                         });
                 });
-
-            if let Some(id) = clicked_id {
-                app.selected_container = Some(id);
-            }
         },
     );
+    if let Some(id) = clicked_id {
+        app.select_container(id);
+    }
 }
 
 fn show_filters(ui: &mut egui::Ui, filters: &mut ContainerFilters) {

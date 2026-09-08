@@ -3,6 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use compose_client::{Compose, ComposeProject};
 use crossbeam_channel::Receiver;
 use docker_client::{
     fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, LogLine,
@@ -15,6 +16,7 @@ const SYSTEM_DF_INTERVAL: Duration = Duration::from_secs(10);
 const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
 const HOST_STATS_INTERVAL: Duration = Duration::from_secs(5);
 const CONTAINERS_INTERVAL: Duration = Duration::from_secs(2);
+const COMPOSE_INTERVAL: Duration = Duration::from_secs(3);
 pub const MAX_LOG_LINES: usize = 10_000;
 
 /// Which context is driving the rest of the dashboard.
@@ -115,7 +117,11 @@ pub struct App {
     pub containers: Option<Vec<Container>>,
     pub containers_error: Option<String>,
     pub selected_container: Option<String>,
+    pub selected_compose_service: Option<String>,
     pub container_filters: ContainerFilters,
+    pub compose: Option<ComposeProject>,
+    pub compose_error: Option<String>,
+    pub compose_missing: bool,
     pub log_lines: VecDeque<LogLine>,
     pub pending_log_lines: VecDeque<LogLine>,
     pub error_lines: VecDeque<LogLine>,
@@ -138,6 +144,8 @@ pub struct App {
     host_stats_poller: Option<Poller>,
     containers_rx: Option<Receiver<Result<Vec<Container>, String>>>,
     containers_poller: Option<Poller>,
+    compose_rx: Option<Receiver<Result<Option<ComposeProject>, String>>>,
+    compose_poller: Option<Poller>,
     logs_rx: Option<Receiver<LogLine>>,
     logs_mux: Option<LogsMux>,
     error_logs_rx: Option<Receiver<LogLine>>,
@@ -160,7 +168,11 @@ impl App {
             containers: None,
             containers_error: None,
             selected_container: None,
+            selected_compose_service: None,
             container_filters: ContainerFilters::default(),
+            compose: None,
+            compose_error: None,
+            compose_missing: false,
             log_lines: VecDeque::new(),
             pending_log_lines: VecDeque::new(),
             error_lines: VecDeque::new(),
@@ -183,6 +195,8 @@ impl App {
             host_stats_poller: None,
             containers_rx: None,
             containers_poller: None,
+            compose_rx: None,
+            compose_poller: None,
             logs_rx: None,
             logs_mux: None,
             error_logs_rx: None,
@@ -282,6 +296,11 @@ impl App {
             self.sync_log_streams();
             needs_repaint = true;
         }
+        if self.drain_compose() {
+            self.prune_selected_compose_service();
+            self.sync_log_streams();
+            needs_repaint = true;
+        }
         if self.drain_logs() {
             needs_repaint = true;
         }
@@ -347,6 +366,14 @@ impl App {
             Err(err) => self.containers_error = Some(err.user_message()),
         }
 
+        match Poller::spawn(transport.clone(), COMPOSE_INTERVAL, Compose::snapshot) {
+            Ok((rx, poller)) => {
+                self.compose_rx = Some(rx);
+                self.compose_poller = Some(poller);
+            }
+            Err(err) => self.compose_error = Some(err.user_message()),
+        }
+
         let (logs_rx, logs_mux) = LogsMux::spawn(transport.clone());
         self.logs_rx = Some(logs_rx);
         self.logs_mux = Some(logs_mux);
@@ -377,6 +404,10 @@ impl App {
             poller.stop();
         }
         self.containers_rx = None;
+        if let Some(poller) = self.compose_poller.take() {
+            poller.stop();
+        }
+        self.compose_rx = None;
         if let Some(mux) = self.logs_mux.take() {
             mux.stop();
         }
@@ -398,6 +429,10 @@ impl App {
         self.containers = None;
         self.containers_error = None;
         self.selected_container = None;
+        self.selected_compose_service = None;
+        self.compose = None;
+        self.compose_error = None;
+        self.compose_missing = false;
         self.log_lines.clear();
         self.pending_log_lines.clear();
         self.error_lines.clear();
@@ -419,10 +454,50 @@ impl App {
                 containers
                     .iter()
                     .filter(|container| container.is_log_target())
+                    .filter(|container| self.matches_selected_compose_service(container))
                     .map(|container| (container.id.clone(), container.display_name()))
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn select_container(&mut self, id: String) {
+        self.selected_container = Some(id.clone());
+        self.selected_compose_service = self.containers.as_ref().and_then(|containers| {
+            containers
+                .iter()
+                .find(|container| container.id == id)
+                .and_then(|container| container.compose_service().map(str::to_string))
+        });
+        self.sync_log_streams();
+    }
+
+    pub fn toggle_compose_service(&mut self, name: &str) {
+        if self.selected_compose_service.as_deref() == Some(name) {
+            self.selected_compose_service = None;
+        } else {
+            self.selected_compose_service = Some(name.to_string());
+            if let Some(id) = self.container_id_for_service(name) {
+                self.selected_container = Some(id);
+            }
+        }
+        self.sync_log_streams();
+    }
+
+    fn matches_selected_compose_service(&self, container: &Container) -> bool {
+        match &self.selected_compose_service {
+            None => true,
+            Some(service) => container.compose_service() == Some(service.as_str()),
+        }
+    }
+
+    fn container_id_for_service(&self, name: &str) -> Option<String> {
+        self.containers.as_ref().and_then(|containers| {
+            containers
+                .iter()
+                .find(|container| container.compose_service() == Some(name))
+                .map(|container| container.id.clone())
+        })
     }
 
     pub fn toggle_log_container(&mut self, id: &str) {
@@ -459,21 +534,11 @@ impl App {
     }
 
     fn mux_targets(&self, excluded: &HashSet<String>) -> Vec<LogTarget> {
-        self.containers
-            .as_ref()
-            .map(|containers| {
-                containers
-                    .iter()
-                    .filter(|container| {
-                        container.is_log_target() && !excluded.contains(&container.id)
-                    })
-                    .map(|container| LogTarget {
-                        id: container.id.clone(),
-                        name: container.display_name(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.log_targets()
+            .into_iter()
+            .filter(|(id, _)| !excluded.contains(id))
+            .map(|(id, name)| LogTarget { id, name })
+            .collect()
     }
 
     fn drain_logs(&mut self) -> bool {
@@ -507,6 +572,43 @@ impl App {
         if !still_present {
             self.selected_container = None;
         }
+    }
+
+    fn prune_selected_compose_service(&mut self) {
+        let Some(name) = &self.selected_compose_service else {
+            return;
+        };
+        let still_present = self
+            .compose
+            .as_ref()
+            .is_some_and(|project| project.services.iter().any(|service| service.name == *name));
+        if !still_present {
+            self.selected_compose_service = None;
+        }
+    }
+
+    fn drain_compose(&mut self) -> bool {
+        let Some(rx) = &self.compose_rx else {
+            return false;
+        };
+        let mut changed = false;
+        while let Ok(update) = rx.try_recv() {
+            changed = true;
+            match update {
+                Ok(Some(project)) => {
+                    self.compose = Some(project);
+                    self.compose_missing = false;
+                    self.compose_error = None;
+                }
+                Ok(None) => {
+                    self.compose = None;
+                    self.compose_missing = true;
+                    self.compose_error = None;
+                }
+                Err(message) => self.compose_error = Some(message),
+            }
+        }
+        changed
     }
 
     fn drain_heartbeat(&mut self) -> bool {

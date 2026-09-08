@@ -44,6 +44,11 @@ impl Docker {
         let output = run_docker(transport, &["ps", "-a", "--format", "{{json .}}"])?;
         Container::from_ndjson(&String::from_utf8_lossy(&output.stdout))
     }
+
+    /// Runs `docker …` with `args` via `transport`.
+    pub fn run(transport: &Transport, args: &[&str]) -> Result<Output, DockerError> {
+        run_docker(transport, args)
+    }
 }
 
 pub(crate) fn version_for(transport: &Transport) -> Result<DockerVersion, DockerError> {
