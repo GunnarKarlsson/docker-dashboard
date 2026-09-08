@@ -201,6 +201,9 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
                     panels::host_df_panel(ui, self.app);
                 });
             }
+            PanelId::Containers => {
+                panels::containers_panel(ui, self.app, pane.icon());
+            }
             _ => {
                 ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
                     panels::placeholder(ui, self.app);

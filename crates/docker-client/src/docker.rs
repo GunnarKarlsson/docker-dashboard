@@ -1,6 +1,7 @@
 use std::io;
 use std::process::Output;
 
+use crate::container::Container;
 use crate::error::DockerError;
 use crate::system_df::SystemDf;
 use crate::system_df_verbose::SystemDfVerbose;
@@ -36,6 +37,12 @@ impl Docker {
     pub fn system_df_verbose(transport: &Transport) -> Result<SystemDfVerbose, DockerError> {
         let output = run_docker(transport, &["system", "df", "-v", "--format", "{{json .}}"])?;
         SystemDfVerbose::from_json(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// Runs `docker ps -a --format '{{json .}}'` via `transport`.
+    pub fn ps_a(transport: &Transport) -> Result<Vec<Container>, DockerError> {
+        let output = run_docker(transport, &["ps", "-a", "--format", "{{json .}}"])?;
+        Container::from_ndjson(&String::from_utf8_lossy(&output.stdout))
     }
 }
 

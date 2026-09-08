@@ -1,6 +1,7 @@
 //! Docker CLI client for local and remote hosts.
 
 mod background;
+mod container;
 mod docker;
 mod error;
 mod heartbeat;
@@ -12,6 +13,7 @@ mod system_df_verbose;
 mod transport;
 mod version;
 
+pub use container::Container;
 pub use docker::Docker;
 pub use error::DockerError;
 pub use heartbeat::{HeartbeatPoller, HeartbeatUpdate};

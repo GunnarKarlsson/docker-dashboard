@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use docker_client::{
-    fetch_host_stats, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, Poller, SystemDf,
-    SystemDfVerbose, Transport,
+    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, Poller,
+    SystemDf, SystemDfVerbose, Transport,
 };
 use eframe::egui;
 
@@ -13,6 +13,7 @@ const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
 const SYSTEM_DF_INTERVAL: Duration = Duration::from_secs(10);
 const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
 const HOST_STATS_INTERVAL: Duration = Duration::from_secs(5);
+const CONTAINERS_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Which context is driving the rest of the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,69 @@ impl LocalContext {
     }
 }
 
+/// Header filters for the Containers table.
+pub struct ContainerFilters {
+    pub running: bool,
+    pub paused: bool,
+    pub exited: bool,
+    pub created: bool,
+    pub restarting: bool,
+    pub query: String,
+    pub compose_project: String,
+}
+
+impl Default for ContainerFilters {
+    fn default() -> Self {
+        Self {
+            running: true,
+            paused: true,
+            exited: true,
+            created: true,
+            restarting: true,
+            query: String::new(),
+            compose_project: String::new(),
+        }
+    }
+}
+
+impl ContainerFilters {
+    pub fn matches(&self, container: &Container) -> bool {
+        if !self.state_enabled(&container.state) {
+            return false;
+        }
+
+        let query = self.query.trim().to_ascii_lowercase();
+        if !query.is_empty() {
+            let name = container.names.to_ascii_lowercase();
+            let image = container.image.to_ascii_lowercase();
+            if !name.contains(&query) && !image.contains(&query) {
+                return false;
+            }
+        }
+
+        let project = self.compose_project.trim().to_ascii_lowercase();
+        if !project.is_empty() {
+            match container.compose_project() {
+                Some(current) if current.to_ascii_lowercase().contains(&project) => {}
+                _ => return false,
+            }
+        }
+
+        true
+    }
+
+    fn state_enabled(&self, state: &str) -> bool {
+        match state.to_ascii_lowercase().as_str() {
+            "running" => self.running,
+            "paused" => self.paused,
+            "exited" | "dead" | "removing" => self.exited,
+            "created" => self.created,
+            "restarting" => self.restarting,
+            _ => true,
+        }
+    }
+}
+
 pub struct App {
     pub local: LocalContext,
     pub contexts_refreshed_at: Option<Instant>,
@@ -56,6 +120,10 @@ pub struct App {
     pub system_df_verbose_error: Option<String>,
     pub host_stats: Option<HostStats>,
     pub host_stats_error: Option<String>,
+    pub containers: Option<Vec<Container>>,
+    pub containers_error: Option<String>,
+    pub selected_container: Option<String>,
+    pub container_filters: ContainerFilters,
     heartbeat_rx: Option<Receiver<HeartbeatUpdate>>,
     heartbeat_poller: Option<HeartbeatPoller>,
     system_df_rx: Option<Receiver<Result<SystemDf, String>>>,
@@ -64,6 +132,8 @@ pub struct App {
     system_df_verbose_poller: Option<Poller>,
     host_stats_rx: Option<Receiver<Result<HostStats, String>>>,
     host_stats_poller: Option<Poller>,
+    containers_rx: Option<Receiver<Result<Vec<Container>, String>>>,
+    containers_poller: Option<Poller>,
 }
 
 impl App {
@@ -79,6 +149,10 @@ impl App {
             system_df_verbose_error: None,
             host_stats: None,
             host_stats_error: None,
+            containers: None,
+            containers_error: None,
+            selected_container: None,
+            container_filters: ContainerFilters::default(),
             heartbeat_rx: None,
             heartbeat_poller: None,
             system_df_rx: None,
@@ -87,6 +161,8 @@ impl App {
             system_df_verbose_poller: None,
             host_stats_rx: None,
             host_stats_poller: None,
+            containers_rx: None,
+            containers_poller: None,
         };
         app.refresh_contexts();
         app
@@ -173,6 +249,14 @@ impl App {
         ) {
             needs_repaint = true;
         }
+        if drain_result(
+            &self.containers_rx,
+            &mut self.containers,
+            &mut self.containers_error,
+        ) {
+            self.prune_selected_container();
+            needs_repaint = true;
+        }
         if needs_repaint {
             ctx.request_repaint();
         }
@@ -216,12 +300,20 @@ impl App {
             Err(err) => self.system_df_verbose_error = Some(err.user_message()),
         }
 
-        match Poller::spawn(transport, HOST_STATS_INTERVAL, fetch_host_stats) {
+        match Poller::spawn(transport.clone(), HOST_STATS_INTERVAL, fetch_host_stats) {
             Ok((rx, poller)) => {
                 self.host_stats_rx = Some(rx);
                 self.host_stats_poller = Some(poller);
             }
             Err(err) => self.host_stats_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport, CONTAINERS_INTERVAL, Docker::ps_a) {
+            Ok((rx, poller)) => {
+                self.containers_rx = Some(rx);
+                self.containers_poller = Some(poller);
+            }
+            Err(err) => self.containers_error = Some(err.user_message()),
         }
     }
 
@@ -242,6 +334,10 @@ impl App {
             poller.stop();
         }
         self.host_stats_rx = None;
+        if let Some(poller) = self.containers_poller.take() {
+            poller.stop();
+        }
+        self.containers_rx = None;
     }
 
     fn clear_context_data(&mut self) {
@@ -252,6 +348,22 @@ impl App {
         self.system_df_verbose_error = None;
         self.host_stats = None;
         self.host_stats_error = None;
+        self.containers = None;
+        self.containers_error = None;
+        self.selected_container = None;
+    }
+
+    fn prune_selected_container(&mut self) {
+        let Some(id) = &self.selected_container else {
+            return;
+        };
+        let still_present = self
+            .containers
+            .as_ref()
+            .is_some_and(|containers| containers.iter().any(|container| container.id == *id));
+        if !still_present {
+            self.selected_container = None;
+        }
     }
 
     fn drain_heartbeat(&mut self) -> bool {

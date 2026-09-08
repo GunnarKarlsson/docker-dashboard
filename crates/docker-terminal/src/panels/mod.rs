@@ -1,3 +1,4 @@
+mod containers;
 mod contexts;
 mod disk;
 mod donut;
@@ -8,6 +9,7 @@ use eframe::egui;
 use crate::app::App;
 use crate::ui_elements;
 
+pub use containers::containers_panel;
 pub use contexts::contexts_panel;
 pub use disk::disk_panel;
 pub use host_df::host_df_panel;
