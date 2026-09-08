@@ -3,6 +3,8 @@ use std::process::Output;
 
 use crate::container::Container;
 use crate::error::DockerError;
+use crate::image::LocalImage;
+use crate::inspect::{InspectReport, InspectTarget};
 use crate::system_df::SystemDf;
 use crate::system_df_verbose::SystemDfVerbose;
 use crate::transport::Transport;
@@ -43,6 +45,21 @@ impl Docker {
     pub fn ps_a(transport: &Transport) -> Result<Vec<Container>, DockerError> {
         let output = run_docker(transport, &["ps", "-a", "--format", "{{json .}}"])?;
         Container::from_ndjson(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// Runs `docker images --format '{{json .}}'` via `transport`.
+    pub fn images(transport: &Transport) -> Result<Vec<LocalImage>, DockerError> {
+        let output = run_docker(transport, &["images", "--format", "{{json .}}"])?;
+        LocalImage::from_ndjson(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// Runs `docker inspect <id>` via `transport`.
+    pub fn inspect(
+        transport: &Transport,
+        target: &InspectTarget,
+    ) -> Result<InspectReport, DockerError> {
+        let output = run_docker(transport, &["inspect", target.id()])?;
+        InspectReport::from_json(&String::from_utf8_lossy(&output.stdout))
     }
 
     /// Runs `docker …` with `args` via `transport`.

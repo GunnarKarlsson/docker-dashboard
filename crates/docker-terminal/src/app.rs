@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use compose_client::{Compose, ComposeProject};
 use crossbeam_channel::Receiver;
 use docker_client::{
-    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, LogLine,
-    LogTarget, LogsMux, Poller, SystemDf, SystemDfVerbose, Transport,
+    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats,
+    InspectReport, InspectTarget, LocalImage, LogLine, LogTarget, LogsMux, Poller, SystemDf,
+    SystemDfVerbose, Transport,
 };
 use eframe::egui;
 
@@ -17,6 +18,8 @@ const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
 const HOST_STATS_INTERVAL: Duration = Duration::from_secs(5);
 const CONTAINERS_INTERVAL: Duration = Duration::from_secs(2);
 const COMPOSE_INTERVAL: Duration = Duration::from_secs(3);
+const IMAGES_INTERVAL: Duration = Duration::from_secs(10);
+const INSPECT_INTERVAL: Duration = Duration::from_secs(3);
 pub const MAX_LOG_LINES: usize = 10_000;
 
 /// Which context is driving the rest of the dashboard.
@@ -103,6 +106,22 @@ impl ContainerFilters {
     }
 }
 
+/// Footer filters for the Local Images table.
+#[derive(Default)]
+pub struct ImageFilters {
+    pub dangling: bool,
+    pub unused: bool,
+}
+
+impl ImageFilters {
+    pub fn matches(&self, dangling: bool, in_use: usize) -> bool {
+        if !self.dangling && !self.unused {
+            return true;
+        }
+        (self.dangling && dangling) || (self.unused && in_use == 0)
+    }
+}
+
 pub struct App {
     pub local: LocalContext,
     pub contexts_refreshed_at: Option<Instant>,
@@ -122,6 +141,13 @@ pub struct App {
     pub compose: Option<ComposeProject>,
     pub compose_error: Option<String>,
     pub compose_missing: bool,
+    pub images: Option<Vec<LocalImage>>,
+    pub images_error: Option<String>,
+    pub image_filters: ImageFilters,
+    pub selected_image: Option<String>,
+    pub inspect: Option<InspectReport>,
+    pub inspect_error: Option<String>,
+    pub inspect_target: Option<InspectTarget>,
     pub log_lines: VecDeque<LogLine>,
     pub pending_log_lines: VecDeque<LogLine>,
     pub error_lines: VecDeque<LogLine>,
@@ -146,6 +172,11 @@ pub struct App {
     containers_poller: Option<Poller>,
     compose_rx: Option<Receiver<Result<Option<ComposeProject>, String>>>,
     compose_poller: Option<Poller>,
+    images_rx: Option<Receiver<Result<Vec<LocalImage>, String>>>,
+    images_poller: Option<Poller>,
+    inspect_rx: Option<Receiver<Result<InspectReport, String>>>,
+    inspect_poller: Option<Poller>,
+    inspect_poller_for: Option<InspectTarget>,
     logs_rx: Option<Receiver<LogLine>>,
     logs_mux: Option<LogsMux>,
     error_logs_rx: Option<Receiver<LogLine>>,
@@ -173,6 +204,13 @@ impl App {
             compose: None,
             compose_error: None,
             compose_missing: false,
+            images: None,
+            images_error: None,
+            image_filters: ImageFilters::default(),
+            selected_image: None,
+            inspect: None,
+            inspect_error: None,
+            inspect_target: None,
             log_lines: VecDeque::new(),
             pending_log_lines: VecDeque::new(),
             error_lines: VecDeque::new(),
@@ -197,6 +235,11 @@ impl App {
             containers_poller: None,
             compose_rx: None,
             compose_poller: None,
+            images_rx: None,
+            images_poller: None,
+            inspect_rx: None,
+            inspect_poller: None,
+            inspect_poller_for: None,
             logs_rx: None,
             logs_mux: None,
             error_logs_rx: None,
@@ -301,6 +344,13 @@ impl App {
             self.sync_log_streams();
             needs_repaint = true;
         }
+        if drain_result(&self.images_rx, &mut self.images, &mut self.images_error) {
+            self.prune_selected_image();
+            needs_repaint = true;
+        }
+        if drain_result(&self.inspect_rx, &mut self.inspect, &mut self.inspect_error) {
+            needs_repaint = true;
+        }
         if self.drain_logs() {
             needs_repaint = true;
         }
@@ -374,6 +424,14 @@ impl App {
             Err(err) => self.compose_error = Some(err.user_message()),
         }
 
+        match Poller::spawn(transport.clone(), IMAGES_INTERVAL, Docker::images) {
+            Ok((rx, poller)) => {
+                self.images_rx = Some(rx);
+                self.images_poller = Some(poller);
+            }
+            Err(err) => self.images_error = Some(err.user_message()),
+        }
+
         let (logs_rx, logs_mux) = LogsMux::spawn(transport.clone());
         self.logs_rx = Some(logs_rx);
         self.logs_mux = Some(logs_mux);
@@ -408,6 +466,11 @@ impl App {
             poller.stop();
         }
         self.compose_rx = None;
+        if let Some(poller) = self.images_poller.take() {
+            poller.stop();
+        }
+        self.images_rx = None;
+        self.stop_inspect_poller();
         if let Some(mux) = self.logs_mux.take() {
             mux.stop();
         }
@@ -433,6 +496,13 @@ impl App {
         self.compose = None;
         self.compose_error = None;
         self.compose_missing = false;
+        self.images = None;
+        self.images_error = None;
+        self.image_filters = ImageFilters::default();
+        self.selected_image = None;
+        self.inspect = None;
+        self.inspect_error = None;
+        self.inspect_target = None;
         self.log_lines.clear();
         self.pending_log_lines.clear();
         self.error_lines.clear();
@@ -469,7 +539,15 @@ impl App {
                 .find(|container| container.id == id)
                 .and_then(|container| container.compose_service().map(str::to_string))
         });
+        self.inspect_target = Some(InspectTarget::Container(id));
         self.sync_log_streams();
+        self.sync_inspect_poller();
+    }
+
+    pub fn select_image(&mut self, id: String) {
+        self.selected_image = Some(id.clone());
+        self.inspect_target = Some(InspectTarget::Image(id));
+        self.sync_inspect_poller();
     }
 
     pub fn toggle_compose_service(&mut self, name: &str) {
@@ -478,10 +556,24 @@ impl App {
         } else {
             self.selected_compose_service = Some(name.to_string());
             if let Some(id) = self.container_id_for_service(name) {
-                self.selected_container = Some(id);
+                self.selected_container = Some(id.clone());
+                self.inspect_target = Some(InspectTarget::Container(id));
+                self.sync_inspect_poller();
             }
         }
         self.sync_log_streams();
+    }
+
+    pub fn image_in_use(&self, image: &LocalImage) -> usize {
+        self.containers
+            .as_ref()
+            .map(|containers| {
+                containers
+                    .iter()
+                    .filter(|container| image.matches_container_image(&container.image))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     fn matches_selected_compose_service(&self, container: &Container) -> bool {
@@ -562,16 +654,76 @@ impl App {
     }
 
     fn prune_selected_container(&mut self) {
-        let Some(id) = &self.selected_container else {
+        let Some(id) = self.selected_container.clone() else {
             return;
         };
         let still_present = self
             .containers
             .as_ref()
-            .is_some_and(|containers| containers.iter().any(|container| container.id == *id));
+            .is_some_and(|containers| containers.iter().any(|container| container.id == id));
         if !still_present {
             self.selected_container = None;
+            if matches!(&self.inspect_target, Some(InspectTarget::Container(target)) if *target == id)
+            {
+                self.inspect_target = None;
+                self.inspect = None;
+                self.sync_inspect_poller();
+            }
         }
+    }
+
+    fn prune_selected_image(&mut self) {
+        let Some(id) = self.selected_image.clone() else {
+            return;
+        };
+        let still_present = self.images.as_ref().is_some_and(|images| {
+            images
+                .iter()
+                .any(|image| image.id == id || image.short_id() == id)
+        });
+        if !still_present {
+            self.selected_image = None;
+            if matches!(&self.inspect_target, Some(InspectTarget::Image(target)) if *target == id) {
+                self.inspect_target = None;
+                self.inspect = None;
+                self.sync_inspect_poller();
+            }
+        }
+    }
+
+    fn sync_inspect_poller(&mut self) {
+        if self.inspect_poller_for == self.inspect_target {
+            return;
+        }
+        self.stop_inspect_poller();
+        self.inspect = None;
+        self.inspect_error = None;
+
+        let Some(context) = self.selected_context else {
+            return;
+        };
+        let Some(target) = self.inspect_target.clone() else {
+            return;
+        };
+        let fetch_target = target.clone();
+        match Poller::spawn(context.transport(), INSPECT_INTERVAL, move |transport| {
+            Docker::inspect(transport, &fetch_target)
+        }) {
+            Ok((rx, poller)) => {
+                self.inspect_rx = Some(rx);
+                self.inspect_poller = Some(poller);
+                self.inspect_poller_for = Some(target);
+            }
+            Err(err) => self.inspect_error = Some(err.user_message()),
+        }
+    }
+
+    fn stop_inspect_poller(&mut self) {
+        if let Some(poller) = self.inspect_poller.take() {
+            poller.stop();
+        }
+        self.inspect_rx = None;
+        self.inspect_poller_for = None;
     }
 
     fn prune_selected_compose_service(&mut self) {

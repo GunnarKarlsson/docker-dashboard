@@ -207,6 +207,12 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
             PanelId::Compose => {
                 panels::compose_panel(ui, self.app, pane.icon());
             }
+            PanelId::LocalImages => {
+                panels::local_images_panel(ui, self.app, pane.icon());
+            }
+            PanelId::Inspect => {
+                panels::inspect_panel(ui, self.app, pane.icon());
+            }
             PanelId::Logs => {
                 let mut show_timestamps = self.app.logs_show_timestamps;
                 let mut auto_scroll = self.app.logs_auto_scroll;
