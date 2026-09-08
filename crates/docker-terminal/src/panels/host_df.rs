@@ -1,4 +1,4 @@
-use docker_client::{SystemDf, SystemDfVerbose};
+use docker_client::{Network, SystemDf, SystemDfVerbose};
 use eframe::egui;
 
 use crate::app::App;
@@ -20,8 +20,18 @@ pub fn host_df_panel(ui: &mut egui::Ui, app: &App) {
     if let Some(error) = &app.system_df_verbose_error {
         ui_elements::error_label(ui, error);
     }
+    if let Some(error) = &app.volumes_error {
+        ui_elements::error_label(ui, error);
+    }
+    if let Some(error) = &app.networks_error {
+        ui_elements::error_label(ui, error);
+    }
 
-    if app.system_df.is_none() && app.system_df_verbose.is_none() {
+    if app.system_df.is_none()
+        && app.system_df_verbose.is_none()
+        && app.volumes.is_none()
+        && app.networks.is_none()
+    {
         ui_elements::panel_loading(ui);
         return;
     }
@@ -38,8 +48,12 @@ pub fn host_df_panel(ui: &mut egui::Ui, app: &App) {
                 if let Some(verbose) = &app.system_df_verbose {
                     ui.separator();
                     show_unused_images(ui, verbose);
-                    ui.separator();
-                    show_volumes(ui, verbose);
+                }
+                ui.separator();
+                show_volumes(ui, app);
+                ui.separator();
+                show_networks(ui, app);
+                if let Some(verbose) = &app.system_df_verbose {
                     ui.separator();
                     show_build_cache(ui, verbose);
                 }
@@ -107,9 +121,51 @@ fn show_unused_images(ui: &mut egui::Ui, verbose: &SystemDfVerbose) {
         });
 }
 
-fn show_volumes(ui: &mut egui::Ui, verbose: &SystemDfVerbose) {
+fn show_volumes(ui: &mut egui::Ui, app: &App) {
     ui.label("Volumes");
 
+    if app.volumes.is_none() && app.system_df_verbose.is_none() {
+        ui_elements::panel_loading(ui);
+        return;
+    }
+
+    if let Some(volumes) = &app.volumes {
+        if volumes.is_empty() {
+            ui.label("None");
+            return;
+        }
+        egui::Grid::new("df_volumes")
+            .num_columns(5)
+            .spacing(theme::GRID_SPACING)
+            .striped(true)
+            .show(ui, |ui| {
+                extend_label(ui, "Name");
+                ui.label("Driver");
+                ui.label("Links");
+                ui.label("Size");
+                ui.label("Dangling");
+                ui.end_row();
+
+                for volume in volumes {
+                    let (links, size) = volume_usage(app.system_df_verbose.as_ref(), &volume.name);
+                    extend_label(ui, &volume.name);
+                    ui.label(dash(&volume.driver));
+                    ui.label(links);
+                    ui.label(size);
+                    if volume.dangling {
+                        ui.colored_label(theme::colors::ERROR, "yes");
+                    } else {
+                        ui.label("—");
+                    }
+                    ui.end_row();
+                }
+            });
+        return;
+    }
+
+    let Some(verbose) = &app.system_df_verbose else {
+        return;
+    };
     if verbose.volumes.is_empty() {
         ui.label("None");
         return;
@@ -132,6 +188,92 @@ fn show_volumes(ui: &mut egui::Ui, verbose: &SystemDfVerbose) {
                 ui.end_row();
             }
         });
+}
+
+fn show_networks(ui: &mut egui::Ui, app: &App) {
+    ui.label("Networks");
+
+    let Some(networks) = &app.networks else {
+        ui_elements::panel_loading(ui);
+        return;
+    };
+
+    if networks.is_empty() {
+        ui.label("None");
+        return;
+    }
+
+    let mut rows: Vec<&Network> = networks.iter().collect();
+    rows.sort_by(|a, b| {
+        b.compose_project()
+            .is_some()
+            .cmp(&a.compose_project().is_some())
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    egui::Grid::new("df_networks")
+        .num_columns(3)
+        .spacing(theme::GRID_SPACING)
+        .striped(true)
+        .show(ui, |ui| {
+            extend_label(ui, "Name");
+            ui.label("Driver");
+            extend_label(ui, "Containers");
+            ui.end_row();
+
+            for network in rows {
+                extend_label(ui, &network.name);
+                ui.label(dash(&network.driver));
+                extend_label(ui, &attached_label(app, network));
+                ui.end_row();
+            }
+        });
+}
+
+fn volume_usage(verbose: Option<&SystemDfVerbose>, name: &str) -> (String, String) {
+    verbose
+        .and_then(|verbose| verbose.volumes.iter().find(|volume| volume.name == name))
+        .map(|volume| {
+            (
+                if volume.links.is_empty() {
+                    "—".to_string()
+                } else {
+                    volume.links.clone()
+                },
+                format_bytes(volume.size_bytes()),
+            )
+        })
+        .unwrap_or_else(|| ("—".into(), "—".into()))
+}
+
+fn attached_label(app: &App, network: &Network) -> String {
+    if network.containers.is_empty() {
+        return "—".to_string();
+    }
+    network
+        .containers
+        .iter()
+        .map(|attached| {
+            let name = app
+                .container_matching_name(&attached.name)
+                .map(|container| container.display_name())
+                .unwrap_or_else(|| attached.name.clone());
+            if attached.ipv4.is_empty() {
+                name
+            } else {
+                format!("{name} {}", attached.ipv4)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn dash(value: &str) -> &str {
+    if value.is_empty() {
+        "—"
+    } else {
+        value
+    }
 }
 
 fn show_build_cache(ui: &mut egui::Ui, verbose: &SystemDfVerbose) {

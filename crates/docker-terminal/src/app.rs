@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use compose_client::{Compose, ComposeProject};
 use crossbeam_channel::Receiver;
 use docker_client::{
-    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats,
-    InspectReport, InspectTarget, LocalImage, LogLine, LogTarget, LogsMux, Poller, SystemDf,
-    SystemDfVerbose, Transport,
+    fetch_host_stats, Container, ContainerStats, Docker, DockerEvent, HeartbeatPoller,
+    HeartbeatUpdate, HostStats, InspectReport, InspectTarget, LocalImage, LogLine, LogTarget,
+    LogsMux, Network, Poller, SystemDf, SystemDfVerbose, Transport, Volume,
 };
 use eframe::egui;
 
@@ -20,6 +20,10 @@ const CONTAINERS_INTERVAL: Duration = Duration::from_secs(2);
 const COMPOSE_INTERVAL: Duration = Duration::from_secs(3);
 const IMAGES_INTERVAL: Duration = Duration::from_secs(10);
 const INSPECT_INTERVAL: Duration = Duration::from_secs(3);
+const STATS_INTERVAL: Duration = Duration::from_secs(2);
+const EVENTS_INTERVAL: Duration = Duration::from_secs(5);
+const VOLUMES_INTERVAL: Duration = Duration::from_secs(10);
+const NETWORKS_INTERVAL: Duration = Duration::from_secs(10);
 pub const MAX_LOG_LINES: usize = 10_000;
 
 /// Which context is driving the rest of the dashboard.
@@ -148,6 +152,14 @@ pub struct App {
     pub inspect: Option<InspectReport>,
     pub inspect_error: Option<String>,
     pub inspect_target: Option<InspectTarget>,
+    pub stats: Option<Vec<ContainerStats>>,
+    pub stats_error: Option<String>,
+    pub events: Option<Vec<DockerEvent>>,
+    pub events_error: Option<String>,
+    pub volumes: Option<Vec<Volume>>,
+    pub volumes_error: Option<String>,
+    pub networks: Option<Vec<Network>>,
+    pub networks_error: Option<String>,
     pub log_lines: VecDeque<LogLine>,
     pub pending_log_lines: VecDeque<LogLine>,
     pub error_lines: VecDeque<LogLine>,
@@ -177,6 +189,14 @@ pub struct App {
     inspect_rx: Option<Receiver<Result<InspectReport, String>>>,
     inspect_poller: Option<Poller>,
     inspect_poller_for: Option<InspectTarget>,
+    stats_rx: Option<Receiver<Result<Vec<ContainerStats>, String>>>,
+    stats_poller: Option<Poller>,
+    events_rx: Option<Receiver<Result<Vec<DockerEvent>, String>>>,
+    events_poller: Option<Poller>,
+    volumes_rx: Option<Receiver<Result<Vec<Volume>, String>>>,
+    volumes_poller: Option<Poller>,
+    networks_rx: Option<Receiver<Result<Vec<Network>, String>>>,
+    networks_poller: Option<Poller>,
     logs_rx: Option<Receiver<LogLine>>,
     logs_mux: Option<LogsMux>,
     error_logs_rx: Option<Receiver<LogLine>>,
@@ -211,6 +231,14 @@ impl App {
             inspect: None,
             inspect_error: None,
             inspect_target: None,
+            stats: None,
+            stats_error: None,
+            events: None,
+            events_error: None,
+            volumes: None,
+            volumes_error: None,
+            networks: None,
+            networks_error: None,
             log_lines: VecDeque::new(),
             pending_log_lines: VecDeque::new(),
             error_lines: VecDeque::new(),
@@ -240,6 +268,14 @@ impl App {
             inspect_rx: None,
             inspect_poller: None,
             inspect_poller_for: None,
+            stats_rx: None,
+            stats_poller: None,
+            events_rx: None,
+            events_poller: None,
+            volumes_rx: None,
+            volumes_poller: None,
+            networks_rx: None,
+            networks_poller: None,
             logs_rx: None,
             logs_mux: None,
             error_logs_rx: None,
@@ -351,6 +387,22 @@ impl App {
         if drain_result(&self.inspect_rx, &mut self.inspect, &mut self.inspect_error) {
             needs_repaint = true;
         }
+        if drain_result(&self.stats_rx, &mut self.stats, &mut self.stats_error) {
+            needs_repaint = true;
+        }
+        if drain_result(&self.events_rx, &mut self.events, &mut self.events_error) {
+            needs_repaint = true;
+        }
+        if drain_result(&self.volumes_rx, &mut self.volumes, &mut self.volumes_error) {
+            needs_repaint = true;
+        }
+        if drain_result(
+            &self.networks_rx,
+            &mut self.networks,
+            &mut self.networks_error,
+        ) {
+            needs_repaint = true;
+        }
         if self.drain_logs() {
             needs_repaint = true;
         }
@@ -432,6 +484,38 @@ impl App {
             Err(err) => self.images_error = Some(err.user_message()),
         }
 
+        match Poller::spawn(transport.clone(), STATS_INTERVAL, Docker::stats) {
+            Ok((rx, poller)) => {
+                self.stats_rx = Some(rx);
+                self.stats_poller = Some(poller);
+            }
+            Err(err) => self.stats_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport.clone(), EVENTS_INTERVAL, Docker::events) {
+            Ok((rx, poller)) => {
+                self.events_rx = Some(rx);
+                self.events_poller = Some(poller);
+            }
+            Err(err) => self.events_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport.clone(), VOLUMES_INTERVAL, Docker::volumes) {
+            Ok((rx, poller)) => {
+                self.volumes_rx = Some(rx);
+                self.volumes_poller = Some(poller);
+            }
+            Err(err) => self.volumes_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport.clone(), NETWORKS_INTERVAL, Docker::networks) {
+            Ok((rx, poller)) => {
+                self.networks_rx = Some(rx);
+                self.networks_poller = Some(poller);
+            }
+            Err(err) => self.networks_error = Some(err.user_message()),
+        }
+
         let (logs_rx, logs_mux) = LogsMux::spawn(transport.clone());
         self.logs_rx = Some(logs_rx);
         self.logs_mux = Some(logs_mux);
@@ -471,6 +555,22 @@ impl App {
         }
         self.images_rx = None;
         self.stop_inspect_poller();
+        if let Some(poller) = self.stats_poller.take() {
+            poller.stop();
+        }
+        self.stats_rx = None;
+        if let Some(poller) = self.events_poller.take() {
+            poller.stop();
+        }
+        self.events_rx = None;
+        if let Some(poller) = self.volumes_poller.take() {
+            poller.stop();
+        }
+        self.volumes_rx = None;
+        if let Some(poller) = self.networks_poller.take() {
+            poller.stop();
+        }
+        self.networks_rx = None;
         if let Some(mux) = self.logs_mux.take() {
             mux.stop();
         }
@@ -503,6 +603,14 @@ impl App {
         self.inspect = None;
         self.inspect_error = None;
         self.inspect_target = None;
+        self.stats = None;
+        self.stats_error = None;
+        self.events = None;
+        self.events_error = None;
+        self.volumes = None;
+        self.volumes_error = None;
+        self.networks = None;
+        self.networks_error = None;
         self.log_lines.clear();
         self.pending_log_lines.clear();
         self.error_lines.clear();
@@ -562,6 +670,32 @@ impl App {
             }
         }
         self.sync_log_streams();
+    }
+
+    pub fn stats_display_name(&self, stats: &ContainerStats) -> String {
+        self.container_matching_id(&stats.id)
+            .map(Container::display_name)
+            .unwrap_or_else(|| stats.name.clone())
+    }
+
+    pub fn container_matching_id(&self, id: &str) -> Option<&Container> {
+        self.containers.as_ref().and_then(|containers| {
+            containers.iter().find(|container| {
+                container.id == id || container.id.starts_with(id) || id.starts_with(&container.id)
+            })
+        })
+    }
+
+    pub fn container_matching_name(&self, name: &str) -> Option<&Container> {
+        self.containers.as_ref().and_then(|containers| {
+            containers.iter().find(|container| {
+                container
+                    .names
+                    .trim_start_matches('/')
+                    .split(',')
+                    .any(|entry| entry == name)
+            })
+        })
     }
 
     pub fn image_in_use(&self, image: &LocalImage) -> usize {

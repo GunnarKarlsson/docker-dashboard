@@ -243,6 +243,9 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
                 self.app.error_show_timestamps = show_timestamps;
                 self.app.error_auto_scroll = auto_scroll;
             }
+            PanelId::StatsEvents => {
+                panels::stats_events_panel(ui, self.app, pane.icon());
+            }
             _ => {
                 ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
                     panels::placeholder(ui, self.app);
