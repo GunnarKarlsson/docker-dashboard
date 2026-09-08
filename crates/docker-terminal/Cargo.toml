@@ -1,0 +1,14 @@
+[package]
+name = "docker-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+compose-client = { path = "../compose-client" }
+docker-client = { path = "../docker-client" }
+ecr-client = { path = "../ecr-client" }
+eframe.workspace = true
+egui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
