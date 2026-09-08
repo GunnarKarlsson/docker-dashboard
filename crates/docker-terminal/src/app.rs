@@ -3,12 +3,15 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use ai_insight::{
+    build_snapshot, spawn_insight, InsightConfig, InsightLine, InsightUpdate, LevelMask,
+};
 use compose_client::{Compose, ComposeProject};
 use crossbeam_channel::Receiver;
 use docker_client::{
     fetch_host_stats, Container, ContainerStats, Docker, DockerEvent, HeartbeatPoller,
-    HeartbeatUpdate, HostStats, InspectReport, InspectTarget, LocalImage, LogLine, LogTarget,
-    LogsMux, Network, Poller, SystemDf, SystemDfVerbose, Transport, Volume,
+    HeartbeatUpdate, HostStats, InspectReport, InspectTarget, LocalImage, LogLevel, LogLine,
+    LogTarget, LogsMux, Network, Poller, SystemDf, SystemDfVerbose, Transport, Volume,
 };
 use eframe::egui;
 
@@ -25,6 +28,9 @@ const EVENTS_INTERVAL: Duration = Duration::from_secs(5);
 const VOLUMES_INTERVAL: Duration = Duration::from_secs(10);
 const NETWORKS_INTERVAL: Duration = Duration::from_secs(10);
 pub const MAX_LOG_LINES: usize = 10_000;
+const MAX_INSIGHTS: usize = 100;
+const INSIGHT_SETTLE: Duration = Duration::from_secs(5);
+const INSIGHT_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Which context is driving the rest of the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +42,12 @@ impl ContextId {
     fn transport(self) -> Transport {
         match self {
             ContextId::Local => Transport::Local,
+        }
+    }
+
+    fn as_key(self) -> &'static str {
+        match self {
+            ContextId::Local => "local",
         }
     }
 }
@@ -126,6 +138,37 @@ impl ImageFilters {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsightStatus {
+    Idle,
+    RequestSent,
+    RequestFailed,
+}
+
+pub struct InsightState {
+    pub status: InsightStatus,
+    pub replies: VecDeque<String>,
+    last_analyze: Option<Instant>,
+    last_error_at: Option<Instant>,
+    last_sent_key: Option<String>,
+    ever_succeeded: bool,
+    generation: u64,
+}
+
+impl Default for InsightState {
+    fn default() -> Self {
+        Self {
+            status: InsightStatus::Idle,
+            replies: VecDeque::new(),
+            last_analyze: None,
+            last_error_at: None,
+            last_sent_key: None,
+            ever_succeeded: false,
+            generation: 0,
+        }
+    }
+}
+
 pub struct App {
     pub local: LocalContext,
     pub contexts_refreshed_at: Option<Instant>,
@@ -172,6 +215,8 @@ pub struct App {
     pub error_auto_scroll: bool,
     pub logs_show_timestamps: bool,
     pub error_show_timestamps: bool,
+    pub insight_auto_scroll: bool,
+    pub insight: InsightState,
     heartbeat_rx: Option<Receiver<HeartbeatUpdate>>,
     heartbeat_poller: Option<HeartbeatPoller>,
     system_df_rx: Option<Receiver<Result<SystemDf, String>>>,
@@ -201,6 +246,8 @@ pub struct App {
     logs_mux: Option<LogsMux>,
     error_logs_rx: Option<Receiver<LogLine>>,
     error_logs_mux: Option<LogsMux>,
+    insight_rx: Option<Receiver<InsightUpdate>>,
+    insight_context: Option<String>,
 }
 
 impl App {
@@ -251,6 +298,8 @@ impl App {
             error_auto_scroll: true,
             logs_show_timestamps: true,
             error_show_timestamps: true,
+            insight_auto_scroll: true,
+            insight: InsightState::default(),
             heartbeat_rx: None,
             heartbeat_poller: None,
             system_df_rx: None,
@@ -280,6 +329,8 @@ impl App {
             logs_mux: None,
             error_logs_rx: None,
             error_logs_mux: None,
+            insight_rx: None,
+            insight_context: None,
         };
         app.refresh_contexts();
         app
@@ -409,6 +460,10 @@ impl App {
         if self.drain_error_logs() {
             needs_repaint = true;
         }
+        if self.drain_insight() {
+            needs_repaint = true;
+        }
+        self.maybe_request_insight();
         if needs_repaint {
             ctx.request_repaint();
         }
@@ -623,6 +678,10 @@ impl App {
         self.error_auto_scroll = true;
         self.logs_show_timestamps = true;
         self.error_show_timestamps = true;
+        self.insight_auto_scroll = true;
+        self.insight = InsightState::default();
+        self.insight_rx = None;
+        self.insight_context = None;
     }
 
     pub fn log_targets(&self) -> Vec<(String, String)> {
@@ -778,13 +837,177 @@ impl App {
     }
 
     fn drain_error_logs(&mut self) -> bool {
-        drain_feed(
+        let had_incoming = self.error_logs_rx.as_ref().is_some_and(|rx| !rx.is_empty());
+        let changed = drain_feed(
             self.error_logs_rx.as_ref(),
             &mut self.error_lines,
             &mut self.pending_error_lines,
             self.error_auto_scroll,
             LogLine::is_error_line,
-        )
+        );
+        if had_incoming {
+            self.insight.last_error_at = Some(Instant::now());
+        }
+        changed
+    }
+
+    fn request_insight(&mut self) {
+        let Some(context) = self.selected_context else {
+            return;
+        };
+        if self.insight.status == InsightStatus::RequestSent {
+            return;
+        }
+
+        let now = Instant::now();
+        let snapshot = build_snapshot(
+            self.insight_lines(),
+            LevelMask::Error,
+            self.insight_host_name(),
+            context.as_key(),
+            now,
+        );
+        if snapshot.clusters.is_empty() {
+            return;
+        }
+        let key = snapshot.digest_key();
+        let context_id = context.as_key().to_string();
+        self.insight.generation = self.insight.generation.wrapping_add(1);
+        self.insight.status = InsightStatus::RequestSent;
+        self.insight.last_analyze = Some(now);
+        self.insight.last_sent_key = Some(key);
+        self.insight_context = Some(context_id.clone());
+        self.insight_rx = Some(spawn_insight(snapshot, self.insight.generation, context_id));
+        tracing::info!(
+            generation = self.insight.generation,
+            "insight request queued"
+        );
+    }
+
+    /// Queues an insight POST when recent errors settle or the digest changes.
+    fn maybe_request_insight(&mut self) {
+        if self.selected_context.is_none() {
+            return;
+        }
+        if self.insight.status == InsightStatus::RequestSent {
+            return;
+        }
+        if !InsightConfig::from_env().has_api_key() {
+            return;
+        }
+
+        let Some(context) = self.selected_context else {
+            return;
+        };
+        let now = Instant::now();
+        let snapshot = build_snapshot(
+            self.insight_lines(),
+            LevelMask::Error,
+            self.insight_host_name(),
+            context.as_key(),
+            now,
+        );
+        if snapshot.clusters.is_empty() {
+            return;
+        }
+        let key = snapshot.digest_key();
+
+        let should_send = match self.insight.last_sent_key.as_deref() {
+            None => self
+                .insight
+                .last_error_at
+                .is_some_and(|at| at.elapsed() >= INSIGHT_SETTLE),
+            Some(prev) => {
+                let cooled = self
+                    .insight
+                    .last_analyze
+                    .is_none_or(|at| at.elapsed() >= INSIGHT_COOLDOWN);
+                let key_changed = key != prev;
+                let high = snapshot.has_new_high_severity(prev);
+                if key_changed {
+                    high || cooled
+                } else {
+                    self.insight.status == InsightStatus::RequestFailed && cooled
+                }
+            }
+        };
+
+        if should_send {
+            self.request_insight();
+        }
+    }
+
+    fn drain_insight(&mut self) -> bool {
+        let Some(rx) = self.insight_rx.as_ref() else {
+            return false;
+        };
+
+        let mut updated = false;
+        while let Ok(update) = rx.try_recv() {
+            let (generation, context_id) = match &update {
+                InsightUpdate::Started {
+                    generation,
+                    context_id,
+                }
+                | InsightUpdate::Reply {
+                    generation,
+                    context_id,
+                    ..
+                }
+                | InsightUpdate::Error {
+                    generation,
+                    context_id,
+                    ..
+                } => (*generation, context_id.as_str()),
+            };
+            if generation != self.insight.generation {
+                continue;
+            }
+            if self.insight_context.as_deref() != Some(context_id) {
+                continue;
+            }
+            if self.selected_context.map(ContextId::as_key) != Some(context_id) {
+                continue;
+            }
+            match update {
+                InsightUpdate::Started { .. } => {
+                    self.insight.status = InsightStatus::RequestSent;
+                    updated = true;
+                }
+                InsightUpdate::Reply { text, .. } => {
+                    self.insight.replies.push_back(text);
+                    while self.insight.replies.len() > MAX_INSIGHTS {
+                        self.insight.replies.pop_front();
+                    }
+                    self.insight.status = InsightStatus::Idle;
+                    self.insight.ever_succeeded = true;
+                    tracing::info!(stored = self.insight.replies.len(), "insight reply stored");
+                    updated = true;
+                }
+                InsightUpdate::Error { .. } => {
+                    self.insight.status = InsightStatus::RequestFailed;
+                    if !self.insight.ever_succeeded {
+                        self.insight.last_sent_key = None;
+                        self.insight.last_error_at = Some(Instant::now());
+                    }
+                    updated = true;
+                }
+            }
+        }
+        updated
+    }
+
+    fn insight_lines(&self) -> impl Iterator<Item = InsightLine> + '_ {
+        self.error_lines.iter().map(|line| InsightLine {
+            received_at: line.received_at,
+            level: insight_level(line.level),
+            tag: line.container_name.clone(),
+            message: line.message.clone(),
+        })
+    }
+
+    fn insight_host_name(&self) -> &str {
+        self.local.engine_version.as_deref().unwrap_or("Docker")
     }
 
     fn prune_selected_container(&mut self) {
@@ -917,6 +1140,13 @@ impl App {
             }
         }
         changed
+    }
+}
+
+fn insight_level(level: LogLevel) -> char {
+    match level {
+        LogLevel::Fatal => 'F',
+        _ => 'E',
     }
 }
 

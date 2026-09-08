@@ -20,3 +20,34 @@ docker compose -f testdata/mock-stack/docker-compose.yml up -d --build
 ```
 
 Tear down with `docker compose -f testdata/mock-stack/docker-compose.yml down -v`. The API is published on `localhost:18080`.
+
+## AI insights
+
+The dashboard submits a clustered Log Errors snapshot to a Chat Completions API and shows the reply in the **Insight** panel.
+
+Error lines are grouped by container name and message shape. Numbers, paths, and hex are collapsed so the same crash fingerprints together. Secrets (Bearer tokens, emails, MACs, JWT-like blobs) are redacted before the POST.
+
+When the mix of errors changes, the app posts again, with a cooldown. No request is sent until `AI_PROVIDER_API_KEY` is set.
+
+The model replies with a one-line verdict (`HEALTHY` / `DEGRADING` / `FAILING`), top issues, and a recommendation for what to do next.
+
+### Configure AI provider
+
+Settings are read from the process environment. On startup the app also loads `crates/docker-terminal/.env` if that file exists.
+
+| Variable | Required | Default |
+| --- | --- | --- |
+| `AI_PROVIDER_API_KEY` | yes | (empty — Insight is skipped) |
+| `AI_PROVIDER_BASE_URL` | no | `https://api.deepseek.com` |
+| `AI_PROVIDER_MODEL` | no | `deepseek-v4-pro` |
+
+Example `.env`:
+
+```
+AI_PROVIDER_API_KEY=sk-...
+AI_PROVIDER_BASE_URL=https://api.deepseek.com
+AI_PROVIDER_MODEL=deepseek-v4-pro
+```
+
+The provider should accept [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create): `POST {AI_PROVIDER_BASE_URL}/chat/completions` (include `/v1` in the base URL if that is part of the path).
+

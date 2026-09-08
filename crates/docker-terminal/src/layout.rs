@@ -243,6 +243,19 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
                 self.app.error_show_timestamps = show_timestamps;
                 self.app.error_auto_scroll = auto_scroll;
             }
+            PanelId::Insight => {
+                let mut auto_scroll = self.app.insight_auto_scroll;
+                ui_elements::panel_with_footer(
+                    ui,
+                    pane.icon(),
+                    pane.title(),
+                    |_| {},
+                    |ui, auto_scroll| panels::insight_panel(ui, self.app, auto_scroll),
+                    &mut auto_scroll,
+                    None,
+                );
+                self.app.insight_auto_scroll = auto_scroll;
+            }
             PanelId::StatsEvents => {
                 panels::stats_events_panel(ui, self.app, pane.icon());
             }

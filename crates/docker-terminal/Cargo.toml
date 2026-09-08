@@ -5,9 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ai-insight = { path = "../ai-insight" }
 compose-client = { path = "../compose-client" }
 crossbeam-channel.workspace = true
 docker-client = { path = "../docker-client" }
+dotenvy.workspace = true
 ecr-client = { path = "../ecr-client" }
 eframe.workspace = true
 egui.workspace = true

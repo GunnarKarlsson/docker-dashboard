@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -48,6 +48,7 @@ pub struct LogLine {
     pub message: String,
     pub stream: LogStream,
     pub level: LogLevel,
+    pub received_at: Instant,
 }
 
 impl LogLine {
@@ -59,6 +60,7 @@ impl LogLine {
             message: message.into(),
             stream: LogStream::Stderr,
             level: LogLevel::Error,
+            received_at: Instant::now(),
         }
     }
 
@@ -338,6 +340,7 @@ pub(crate) fn parse_log_line(
         message: message.to_string(),
         stream,
         level,
+        received_at: Instant::now(),
     }
 }
 
@@ -455,6 +458,7 @@ mod tests {
             message: "INFO hello".into(),
             stream: LogStream::Stdout,
             level: LogLevel::Info,
+            received_at: std::time::Instant::now(),
         };
         assert_eq!(
             line.format_line(true),

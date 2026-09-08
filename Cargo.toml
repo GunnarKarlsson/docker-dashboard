@@ -3,6 +3,7 @@ members = [
     "crates/docker-client",
     "crates/compose-client",
     "crates/ecr-client",
+    "crates/ai-insight",
     "crates/docker-terminal",
 ]
 resolver = "2"
