@@ -1,11 +1,12 @@
 //! Application state: context selection drives pollers.
 
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use docker_client::{
-    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, Poller,
-    SystemDf, SystemDfVerbose, Transport,
+    fetch_host_stats, Container, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, LogLine,
+    LogTarget, LogsMux, Poller, SystemDf, SystemDfVerbose, Transport,
 };
 use eframe::egui;
 
@@ -14,6 +15,7 @@ const SYSTEM_DF_INTERVAL: Duration = Duration::from_secs(10);
 const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
 const HOST_STATS_INTERVAL: Duration = Duration::from_secs(5);
 const CONTAINERS_INTERVAL: Duration = Duration::from_secs(2);
+pub const MAX_LOG_LINES: usize = 10_000;
 
 /// Which context is driving the rest of the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,17 @@ pub struct App {
     pub containers_error: Option<String>,
     pub selected_container: Option<String>,
     pub container_filters: ContainerFilters,
+    pub log_lines: VecDeque<LogLine>,
+    pub pending_log_lines: VecDeque<LogLine>,
+    pub error_lines: VecDeque<LogLine>,
+    pub pending_error_lines: VecDeque<LogLine>,
+    pub logs_excluded: HashSet<String>,
+    pub logs_filter: String,
+    pub error_logs_filter: String,
+    pub logs_auto_scroll: bool,
+    pub error_auto_scroll: bool,
+    pub logs_show_timestamps: bool,
+    pub error_show_timestamps: bool,
     heartbeat_rx: Option<Receiver<HeartbeatUpdate>>,
     heartbeat_poller: Option<HeartbeatPoller>,
     system_df_rx: Option<Receiver<Result<SystemDf, String>>>,
@@ -124,6 +137,8 @@ pub struct App {
     host_stats_poller: Option<Poller>,
     containers_rx: Option<Receiver<Result<Vec<Container>, String>>>,
     containers_poller: Option<Poller>,
+    logs_rx: Option<Receiver<LogLine>>,
+    logs_mux: Option<LogsMux>,
 }
 
 impl App {
@@ -143,6 +158,17 @@ impl App {
             containers_error: None,
             selected_container: None,
             container_filters: ContainerFilters::default(),
+            log_lines: VecDeque::new(),
+            pending_log_lines: VecDeque::new(),
+            error_lines: VecDeque::new(),
+            pending_error_lines: VecDeque::new(),
+            logs_excluded: HashSet::new(),
+            logs_filter: String::new(),
+            error_logs_filter: String::new(),
+            logs_auto_scroll: true,
+            error_auto_scroll: true,
+            logs_show_timestamps: true,
+            error_show_timestamps: true,
             heartbeat_rx: None,
             heartbeat_poller: None,
             system_df_rx: None,
@@ -153,6 +179,8 @@ impl App {
             host_stats_poller: None,
             containers_rx: None,
             containers_poller: None,
+            logs_rx: None,
+            logs_mux: None,
         };
         app.refresh_contexts();
         app
@@ -245,6 +273,10 @@ impl App {
             &mut self.containers_error,
         ) {
             self.prune_selected_container();
+            self.sync_log_streams();
+            needs_repaint = true;
+        }
+        if self.drain_logs() {
             needs_repaint = true;
         }
         if needs_repaint {
@@ -298,13 +330,17 @@ impl App {
             Err(err) => self.host_stats_error = Some(err.user_message()),
         }
 
-        match Poller::spawn(transport, CONTAINERS_INTERVAL, Docker::ps_a) {
+        match Poller::spawn(transport.clone(), CONTAINERS_INTERVAL, Docker::ps_a) {
             Ok((rx, poller)) => {
                 self.containers_rx = Some(rx);
                 self.containers_poller = Some(poller);
             }
             Err(err) => self.containers_error = Some(err.user_message()),
         }
+
+        let (logs_rx, logs_mux) = LogsMux::spawn(transport);
+        self.logs_rx = Some(logs_rx);
+        self.logs_mux = Some(logs_mux);
     }
 
     fn stop_streams(&mut self) {
@@ -328,6 +364,10 @@ impl App {
             poller.stop();
         }
         self.containers_rx = None;
+        if let Some(mux) = self.logs_mux.take() {
+            mux.stop();
+        }
+        self.logs_rx = None;
     }
 
     fn clear_context_data(&mut self) {
@@ -341,6 +381,108 @@ impl App {
         self.containers = None;
         self.containers_error = None;
         self.selected_container = None;
+        self.log_lines.clear();
+        self.pending_log_lines.clear();
+        self.error_lines.clear();
+        self.pending_error_lines.clear();
+        self.logs_excluded.clear();
+        self.logs_filter.clear();
+        self.error_logs_filter.clear();
+        self.logs_auto_scroll = true;
+        self.error_auto_scroll = true;
+        self.logs_show_timestamps = true;
+        self.error_show_timestamps = true;
+    }
+
+    pub fn log_targets(&self) -> Vec<(String, String)> {
+        self.containers
+            .as_ref()
+            .map(|containers| {
+                containers
+                    .iter()
+                    .filter(|container| container.is_log_target())
+                    .map(|container| (container.id.clone(), container.display_name()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn toggle_log_container(&mut self, id: &str) {
+        if !self.logs_excluded.remove(id) {
+            self.logs_excluded.insert(id.to_string());
+        }
+    }
+
+    fn sync_log_streams(&mut self) {
+        let Some(mux) = self.logs_mux.as_mut() else {
+            return;
+        };
+        let targets: Vec<LogTarget> = self
+            .containers
+            .as_ref()
+            .map(|containers| {
+                containers
+                    .iter()
+                    .filter(|container| container.is_log_target())
+                    .map(|container| LogTarget {
+                        id: container.id.clone(),
+                        name: container.display_name(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        mux.sync(&targets);
+    }
+
+    fn drain_logs(&mut self) -> bool {
+        let incoming = take_log_lines(self.logs_rx.as_ref());
+        if incoming.is_empty()
+            && self.pending_log_lines.is_empty()
+            && self.pending_error_lines.is_empty()
+        {
+            return false;
+        }
+
+        let mut updated = false;
+
+        if self.logs_auto_scroll {
+            if !self.pending_log_lines.is_empty() {
+                self.log_lines.extend(self.pending_log_lines.drain(..));
+                updated = true;
+            }
+            if !incoming.is_empty() {
+                self.log_lines.extend(incoming.iter().cloned());
+                updated = true;
+            }
+            if updated {
+                trim_buffer(&mut self.log_lines);
+            }
+        } else if !incoming.is_empty() {
+            self.pending_log_lines.extend(incoming.iter().cloned());
+            trim_buffer(&mut self.pending_log_lines);
+        }
+
+        let errors: Vec<LogLine> = incoming
+            .into_iter()
+            .filter(LogLine::is_error_line)
+            .collect();
+
+        if self.error_auto_scroll {
+            if !self.pending_error_lines.is_empty() {
+                self.error_lines.extend(self.pending_error_lines.drain(..));
+                updated = true;
+            }
+            if !errors.is_empty() {
+                self.error_lines.extend(errors);
+                updated = true;
+            }
+            trim_buffer(&mut self.error_lines);
+        } else if !errors.is_empty() {
+            self.pending_error_lines.extend(errors);
+            trim_buffer(&mut self.pending_error_lines);
+        }
+
+        updated
     }
 
     fn prune_selected_container(&mut self) {
@@ -399,4 +541,21 @@ fn drain_result<T>(
         }
     }
     changed
+}
+
+fn take_log_lines(rx: Option<&Receiver<LogLine>>) -> Vec<LogLine> {
+    let Some(rx) = rx else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn trim_buffer(buffer: &mut VecDeque<LogLine>) {
+    while buffer.len() > MAX_LOG_LINES {
+        buffer.pop_front();
+    }
 }

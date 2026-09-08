@@ -58,6 +58,27 @@ impl Container {
             (None, None) => None,
         }
     }
+
+    /// Short name for log chips: compose service, else the first docker name.
+    pub fn display_name(&self) -> String {
+        if let Some(service) = self.compose_service() {
+            return service.to_string();
+        }
+        self.names
+            .trim_start_matches('/')
+            .split(',')
+            .next()
+            .unwrap_or(&self.names)
+            .to_string()
+    }
+
+    /// Containers whose logs should be followed (`docker logs -f`).
+    pub fn is_log_target(&self) -> bool {
+        matches!(
+            self.state.to_ascii_lowercase().as_str(),
+            "running" | "restarting"
+        )
+    }
 }
 
 fn label_value<'a>(labels: &'a str, key: &str) -> Option<&'a str> {
@@ -91,5 +112,22 @@ mod tests {
     fn empty_ps_is_no_containers() {
         let rows = Container::from_ndjson("\n").expect("empty ok");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn display_name_prefers_compose_service() {
+        let container = Container {
+            id: "abc".into(),
+            names: "/dd-mock-api-1".into(),
+            image: "dd-mock".into(),
+            state: "running".into(),
+            status: "Up".into(),
+            ports: String::new(),
+            created_at: String::new(),
+            running_for: String::new(),
+            labels: "com.docker.compose.project=dd-mock,com.docker.compose.service=api".into(),
+        };
+        assert_eq!(container.display_name(), "api");
+        assert!(container.is_log_target());
     }
 }

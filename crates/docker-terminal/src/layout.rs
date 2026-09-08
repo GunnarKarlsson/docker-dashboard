@@ -204,6 +204,36 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
             PanelId::Containers => {
                 panels::containers_panel(ui, self.app, pane.icon());
             }
+            PanelId::Logs => {
+                let mut show_timestamps = self.app.logs_show_timestamps;
+                let mut auto_scroll = self.app.logs_auto_scroll;
+                ui_elements::panel_with_footer(
+                    ui,
+                    pane.icon(),
+                    pane.title(),
+                    |_| {},
+                    |ui, auto_scroll| panels::logs_panel(ui, self.app, auto_scroll),
+                    &mut auto_scroll,
+                    Some(&mut show_timestamps),
+                );
+                self.app.logs_show_timestamps = show_timestamps;
+                self.app.logs_auto_scroll = auto_scroll;
+            }
+            PanelId::LogErrors => {
+                let mut show_timestamps = self.app.error_show_timestamps;
+                let mut auto_scroll = self.app.error_auto_scroll;
+                ui_elements::panel_with_footer(
+                    ui,
+                    pane.icon(),
+                    pane.title(),
+                    |_| {},
+                    |ui, auto_scroll| panels::log_errors_panel(ui, self.app, auto_scroll),
+                    &mut auto_scroll,
+                    Some(&mut show_timestamps),
+                );
+                self.app.error_show_timestamps = show_timestamps;
+                self.app.error_auto_scroll = auto_scroll;
+            }
             _ => {
                 ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
                     panels::placeholder(ui, self.app);
