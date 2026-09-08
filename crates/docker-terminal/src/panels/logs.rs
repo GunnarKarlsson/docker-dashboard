@@ -8,7 +8,7 @@ use crate::theme;
 use crate::ui_elements;
 
 pub fn logs_panel(ui: &mut egui::Ui, app: &mut App, auto_scroll: bool) -> usize {
-    show_container_toggles(ui, app);
+    show_container_toggles(ui, app, false);
     ui_elements::filter_row(ui, |ui| {
         ui.label(filter_text("Filter:"));
         ui.add(
@@ -63,7 +63,7 @@ pub fn logs_panel(ui: &mut egui::Ui, app: &mut App, auto_scroll: bool) -> usize 
 }
 
 pub fn log_errors_panel(ui: &mut egui::Ui, app: &mut App, auto_scroll: bool) -> usize {
-    show_container_toggles(ui, app);
+    show_container_toggles(ui, app, true);
     ui_elements::filter_row(ui, |ui| {
         ui.label(filter_text("Filter:"));
         ui.add(
@@ -95,7 +95,7 @@ pub fn log_errors_panel(ui: &mut egui::Ui, app: &mut App, auto_scroll: bool) -> 
 
     let matching = filtered_line_indices(
         &app.error_lines,
-        &app.logs_excluded,
+        &app.error_logs_excluded,
         &app.error_logs_filter,
         app.error_show_timestamps,
     );
@@ -117,7 +117,7 @@ pub fn log_errors_panel(ui: &mut egui::Ui, app: &mut App, auto_scroll: bool) -> 
     matching.len()
 }
 
-fn show_container_toggles(ui: &mut egui::Ui, app: &mut App) {
+fn show_container_toggles(ui: &mut egui::Ui, app: &mut App, errors_panel: bool) {
     let targets = app.log_targets();
     let mut toggled = None;
     if targets.is_empty() {
@@ -127,7 +127,11 @@ fn show_container_toggles(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal_wrapped(|ui| {
         ui.label(filter_text("Containers:"));
         for (id, name) in &targets {
-            let included = !app.logs_excluded.contains(id);
+            let included = if errors_panel {
+                !app.error_logs_excluded.contains(id)
+            } else {
+                !app.logs_excluded.contains(id)
+            };
             if ui.selectable_label(included, filter_text(name)).clicked() {
                 toggled = Some(id.clone());
             }
@@ -136,7 +140,11 @@ fn show_container_toggles(ui: &mut egui::Ui, app: &mut App) {
     ui_elements::section_gap(ui);
 
     if let Some(id) = toggled {
-        app.toggle_log_container(&id);
+        if errors_panel {
+            app.toggle_error_log_container(&id);
+        } else {
+            app.toggle_log_container(&id);
+        }
     }
 }
 

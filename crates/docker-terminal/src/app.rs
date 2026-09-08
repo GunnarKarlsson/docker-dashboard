@@ -121,6 +121,7 @@ pub struct App {
     pub error_lines: VecDeque<LogLine>,
     pub pending_error_lines: VecDeque<LogLine>,
     pub logs_excluded: HashSet<String>,
+    pub error_logs_excluded: HashSet<String>,
     pub logs_filter: String,
     pub error_logs_filter: String,
     pub logs_auto_scroll: bool,
@@ -139,6 +140,8 @@ pub struct App {
     containers_poller: Option<Poller>,
     logs_rx: Option<Receiver<LogLine>>,
     logs_mux: Option<LogsMux>,
+    error_logs_rx: Option<Receiver<LogLine>>,
+    error_logs_mux: Option<LogsMux>,
 }
 
 impl App {
@@ -163,6 +166,7 @@ impl App {
             error_lines: VecDeque::new(),
             pending_error_lines: VecDeque::new(),
             logs_excluded: HashSet::new(),
+            error_logs_excluded: HashSet::new(),
             logs_filter: String::new(),
             error_logs_filter: String::new(),
             logs_auto_scroll: true,
@@ -181,6 +185,8 @@ impl App {
             containers_poller: None,
             logs_rx: None,
             logs_mux: None,
+            error_logs_rx: None,
+            error_logs_mux: None,
         };
         app.refresh_contexts();
         app
@@ -279,6 +285,9 @@ impl App {
         if self.drain_logs() {
             needs_repaint = true;
         }
+        if self.drain_error_logs() {
+            needs_repaint = true;
+        }
         if needs_repaint {
             ctx.request_repaint();
         }
@@ -338,9 +347,13 @@ impl App {
             Err(err) => self.containers_error = Some(err.user_message()),
         }
 
-        let (logs_rx, logs_mux) = LogsMux::spawn(transport);
+        let (logs_rx, logs_mux) = LogsMux::spawn(transport.clone());
         self.logs_rx = Some(logs_rx);
         self.logs_mux = Some(logs_mux);
+
+        let (error_logs_rx, error_logs_mux) = LogsMux::spawn(transport);
+        self.error_logs_rx = Some(error_logs_rx);
+        self.error_logs_mux = Some(error_logs_mux);
     }
 
     fn stop_streams(&mut self) {
@@ -368,6 +381,10 @@ impl App {
             mux.stop();
         }
         self.logs_rx = None;
+        if let Some(mux) = self.error_logs_mux.take() {
+            mux.stop();
+        }
+        self.error_logs_rx = None;
     }
 
     fn clear_context_data(&mut self) {
@@ -386,6 +403,7 @@ impl App {
         self.error_lines.clear();
         self.pending_error_lines.clear();
         self.logs_excluded.clear();
+        self.error_logs_excluded.clear();
         self.logs_filter.clear();
         self.error_logs_filter.clear();
         self.logs_auto_scroll = true;
@@ -408,81 +426,74 @@ impl App {
     }
 
     pub fn toggle_log_container(&mut self, id: &str) {
-        if !self.logs_excluded.remove(id) {
-            self.logs_excluded.insert(id.to_string());
-        }
+        toggle_excluded(&mut self.logs_excluded, id);
+        prune_excluded_lines(&mut self.log_lines, &self.logs_excluded);
+        prune_excluded_lines(&mut self.pending_log_lines, &self.logs_excluded);
+        self.sync_logs_mux();
+    }
+
+    pub fn toggle_error_log_container(&mut self, id: &str) {
+        toggle_excluded(&mut self.error_logs_excluded, id);
+        prune_excluded_lines(&mut self.error_lines, &self.error_logs_excluded);
+        prune_excluded_lines(&mut self.pending_error_lines, &self.error_logs_excluded);
+        self.sync_error_logs_mux();
     }
 
     fn sync_log_streams(&mut self) {
-        let Some(mux) = self.logs_mux.as_mut() else {
-            return;
-        };
-        let targets: Vec<LogTarget> = self
-            .containers
+        self.sync_logs_mux();
+        self.sync_error_logs_mux();
+    }
+
+    fn sync_logs_mux(&mut self) {
+        let targets = self.mux_targets(&self.logs_excluded);
+        if let Some(mux) = self.logs_mux.as_mut() {
+            mux.sync(&targets);
+        }
+    }
+
+    fn sync_error_logs_mux(&mut self) {
+        let targets = self.mux_targets(&self.error_logs_excluded);
+        if let Some(mux) = self.error_logs_mux.as_mut() {
+            mux.sync(&targets);
+        }
+    }
+
+    fn mux_targets(&self, excluded: &HashSet<String>) -> Vec<LogTarget> {
+        self.containers
             .as_ref()
             .map(|containers| {
                 containers
                     .iter()
-                    .filter(|container| container.is_log_target())
+                    .filter(|container| {
+                        container.is_log_target() && !excluded.contains(&container.id)
+                    })
                     .map(|container| LogTarget {
                         id: container.id.clone(),
                         name: container.display_name(),
                     })
                     .collect()
             })
-            .unwrap_or_default();
-        mux.sync(&targets);
+            .unwrap_or_default()
     }
 
     fn drain_logs(&mut self) -> bool {
-        let incoming = take_log_lines(self.logs_rx.as_ref());
-        if incoming.is_empty()
-            && self.pending_log_lines.is_empty()
-            && self.pending_error_lines.is_empty()
-        {
-            return false;
-        }
+        drain_feed(
+            self.logs_rx.as_ref(),
+            &mut self.log_lines,
+            &mut self.pending_log_lines,
+            self.logs_auto_scroll,
+            |_| true,
+        )
+    }
 
-        let mut updated = false;
-
-        if self.logs_auto_scroll {
-            if !self.pending_log_lines.is_empty() {
-                self.log_lines.extend(self.pending_log_lines.drain(..));
-                updated = true;
-            }
-            if !incoming.is_empty() {
-                self.log_lines.extend(incoming.iter().cloned());
-                updated = true;
-            }
-            if updated {
-                trim_buffer(&mut self.log_lines);
-            }
-        } else if !incoming.is_empty() {
-            self.pending_log_lines.extend(incoming.iter().cloned());
-            trim_buffer(&mut self.pending_log_lines);
-        }
-
-        let errors: Vec<LogLine> = incoming
-            .into_iter()
-            .filter(LogLine::is_error_line)
-            .collect();
-
-        if self.error_auto_scroll {
-            if !self.pending_error_lines.is_empty() {
-                self.error_lines.extend(self.pending_error_lines.drain(..));
-                updated = true;
-            }
-            if !errors.is_empty() {
-                self.error_lines.extend(errors);
-                updated = true;
-            }
-            trim_buffer(&mut self.error_lines);
-        } else if !errors.is_empty() {
-            self.pending_error_lines.extend(errors);
-            trim_buffer(&mut self.pending_error_lines);
-        }
-
-        updated
+    fn drain_error_logs(&mut self) -> bool {
+        drain_feed(
+            self.error_logs_rx.as_ref(),
+            &mut self.error_lines,
+            &mut self.pending_error_lines,
+            self.error_auto_scroll,
+            LogLine::is_error_line,
+        )
     }
 
     fn prune_selected_container(&mut self) {
@@ -543,6 +554,41 @@ fn drain_result<T>(
     changed
 }
 
+fn drain_feed(
+    rx: Option<&Receiver<LogLine>>,
+    lines: &mut VecDeque<LogLine>,
+    pending: &mut VecDeque<LogLine>,
+    auto_scroll: bool,
+    keep: impl Fn(&LogLine) -> bool,
+) -> bool {
+    let incoming: Vec<LogLine> = take_log_lines(rx).into_iter().filter(keep).collect();
+    if incoming.is_empty() && pending.is_empty() {
+        return false;
+    }
+
+    if auto_scroll {
+        let mut updated = false;
+        if !pending.is_empty() {
+            lines.extend(pending.drain(..));
+            updated = true;
+        }
+        if !incoming.is_empty() {
+            lines.extend(incoming);
+            updated = true;
+        }
+        if updated {
+            trim_buffer(lines);
+        }
+        updated
+    } else {
+        if !incoming.is_empty() {
+            pending.extend(incoming);
+            trim_buffer(pending);
+        }
+        false
+    }
+}
+
 fn take_log_lines(rx: Option<&Receiver<LogLine>>) -> Vec<LogLine> {
     let Some(rx) = rx else {
         return Vec::new();
@@ -552,6 +598,16 @@ fn take_log_lines(rx: Option<&Receiver<LogLine>>) -> Vec<LogLine> {
         lines.push(line);
     }
     lines
+}
+
+fn toggle_excluded(excluded: &mut HashSet<String>, id: &str) {
+    if !excluded.remove(id) {
+        excluded.insert(id.to_string());
+    }
+}
+
+fn prune_excluded_lines(buffer: &mut VecDeque<LogLine>, excluded: &HashSet<String>) {
+    buffer.retain(|line| line.container_id.is_empty() || !excluded.contains(&line.container_id));
 }
 
 fn trim_buffer(buffer: &mut VecDeque<LogLine>) {
