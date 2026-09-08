@@ -1,20 +1,51 @@
+mod app;
+mod layout;
+#[cfg(target_os = "macos")]
+mod macos;
+mod panels;
+mod theme;
+mod ui_elements;
+
 use compose_client::Compose;
 use docker_client::Docker;
 use ecr_client::Ecr;
-use eframe::egui::{self, Color32};
+use egui_tiles::Tree;
 
-const WINDOW_SIZE: [f32; 2] = [1400.0, 900.0];
-const BG: Color32 = Color32::from_rgb(16, 20, 28);
+use crate::app::App;
+use crate::layout::PanelId;
 
-struct TerminalApp;
+struct TerminalApp {
+    inner: App,
+    layout_tree: Tree<PanelId>,
+}
+
+impl TerminalApp {
+    fn new(docker_error: Option<String>) -> Self {
+        Self {
+            inner: App::new(docker_error),
+            layout_tree: layout::create_default_tree(),
+        }
+    }
+}
 
 impl eframe::App for TerminalApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(BG))
+    fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        self.inner.tick(ctx);
+
+        #[cfg(target_os = "macos")]
+        ui_elements::title_bar(ctx, frame);
+
+        eframe::egui::CentralPanel::default()
+            .frame(ui_elements::shell_frame(ctx))
             .show(ctx, |ui| {
-                ui.colored_label(Color32::from_rgb(232, 236, 242), "Docker dashboard");
+                ui_elements::canvas_margin_frame().show(ui, |ui| {
+                    layout::show(ui, &mut self.layout_tree, &mut self.inner);
+                });
             });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.inner.shutdown();
     }
 }
 
@@ -22,8 +53,11 @@ fn main() -> eframe::Result<()> {
     init_tracing();
     tracing::info!("docker-terminal started");
 
-    if let Err(err) = Docker::check_available() {
-        tracing::warn!("docker not available: {}", err.user_message());
+    let docker_error = Docker::check_available()
+        .err()
+        .map(|err| err.user_message());
+    if let Some(err) = &docker_error {
+        tracing::warn!("docker not available: {err}");
     }
     if let Err(err) = Compose::check_available() {
         tracing::warn!("compose not available: {err}");
@@ -32,9 +66,17 @@ fn main() -> eframe::Result<()> {
         tracing::warn!("ecr not available: {err}");
     }
 
-    let viewport = egui::ViewportBuilder::default()
-        .with_inner_size(WINDOW_SIZE)
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size(theme::DEFAULT_WINDOW_SIZE)
         .with_title("Docker Dashboard");
+    #[cfg(target_os = "macos")]
+    {
+        // Content draws under the traffic lights; we paint a dark grey title strip.
+        viewport = viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
 
     let options = eframe::NativeOptions {
         viewport,
@@ -44,7 +86,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Docker Dashboard",
         options,
-        Box::new(|_cc| Ok(Box::new(TerminalApp))),
+        Box::new(|cc| {
+            theme::configure(&cc.egui_ctx);
+            Ok(Box::new(TerminalApp::new(docker_error)))
+        }),
     )
 }
 

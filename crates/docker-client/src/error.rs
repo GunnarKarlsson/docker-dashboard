@@ -28,7 +28,9 @@ impl DockerError {
             DockerError::Io(err) => format!("Failed to run docker: {err}"),
             DockerError::VersionCheckFailed(stderr) => classify_docker_stderr(stderr),
             DockerError::CommandFailed { stderr, .. } => classify_docker_stderr(stderr),
-            DockerError::ParseFailed(message) => format!("Failed to parse docker output: {message}"),
+            DockerError::ParseFailed(message) => {
+                format!("Failed to parse docker output: {message}")
+            }
         }
     }
 }
@@ -65,7 +67,9 @@ mod tests {
     #[test]
     fn classify_permission_denied() {
         assert_eq!(
-            classify_docker_stderr("permission denied while trying to connect to the Docker daemon socket"),
+            classify_docker_stderr(
+                "permission denied while trying to connect to the Docker daemon socket"
+            ),
             "Permission denied talking to the Docker daemon"
         );
     }

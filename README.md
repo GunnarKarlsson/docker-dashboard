@@ -1,6 +1,6 @@
 # Docker Dashboard
 
-A native GUI written in Rust for viewing Docker host, container, image, and Compose data in a single window.
+A Dashboard written in Rust using egui for viewing Docker hosts, containers, images, and Compose data in a single window.
 
 ## Run
 
