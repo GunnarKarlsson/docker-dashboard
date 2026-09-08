@@ -114,7 +114,7 @@ pub const TITLE_BAR_HEIGHT: f32 = 36.0;
 pub const TRAFFIC_LIGHTS_WIDTH: f32 = 96.0;
 
 /// Default window inner size `[width, height]`.
-pub const DEFAULT_WINDOW_SIZE: [f32; 2] = [1400.0, 900.0];
+pub const DEFAULT_WINDOW_SIZE: [f32; 2] = [1600.0, 1000.0];
 
 pub const FONT_SMALL: f32 = 10.0;
 pub const FONT_BODY: f32 = 13.0;
