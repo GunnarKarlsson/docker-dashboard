@@ -136,6 +136,7 @@ pub mod icons {
     }
 
     /// RAM module icon.
+    #[allow(dead_code)]
     pub fn ram() -> egui::ImageSource<'static> {
         egui::include_image!("../assets/icons/ram.svg")
     }

@@ -1,0 +1,4 @@
+FROM alpine:3.20
+
+# Distinct unused layer so `docker system df -v` lists this image with UniqueSize > 0.
+RUN dd if=/dev/urandom of=/unused-blob bs=1M count=8

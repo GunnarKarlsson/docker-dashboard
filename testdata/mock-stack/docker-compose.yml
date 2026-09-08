@@ -31,5 +31,14 @@ services:
       retries: 1
       start_period: 1s
 
+  # Built, not started — an unused image for Storage Details.
+  unused:
+    profiles: ["disk"]
+    build:
+      context: .
+      dockerfile: Dockerfile.unused
+    image: dd-mock-unused
+    command: ["true"]
+
 volumes:
   db-data:

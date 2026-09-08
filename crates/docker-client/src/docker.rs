@@ -2,6 +2,8 @@ use std::io;
 use std::process::Output;
 
 use crate::error::DockerError;
+use crate::system_df::SystemDf;
+use crate::system_df_verbose::SystemDfVerbose;
 use crate::transport::Transport;
 use crate::version::DockerVersion;
 
@@ -23,6 +25,18 @@ impl Docker {
     pub fn version_for(transport: &Transport) -> Result<DockerVersion, DockerError> {
         version_for(transport)
     }
+
+    /// Runs `docker system df --format '{{json .}}'` via `transport`.
+    pub fn system_df(transport: &Transport) -> Result<SystemDf, DockerError> {
+        let output = run_docker(transport, &["system", "df", "--format", "{{json .}}"])?;
+        SystemDf::from_ndjson(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// Runs `docker system df -v --format '{{json .}}'` via `transport`.
+    pub fn system_df_verbose(transport: &Transport) -> Result<SystemDfVerbose, DockerError> {
+        let output = run_docker(transport, &["system", "df", "-v", "--format", "{{json .}}"])?;
+        SystemDfVerbose::from_json(&String::from_utf8_lossy(&output.stdout))
+    }
 }
 
 pub(crate) fn version_for(transport: &Transport) -> Result<DockerVersion, DockerError> {
@@ -38,6 +52,25 @@ pub(crate) fn run_docker(transport: &Transport, args: &[&str]) -> Result<Output,
         Ok(output)
     } else {
         let command = transport.describe_command(args);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        Err(DockerError::CommandFailed { command, stderr })
+    }
+}
+
+pub(crate) fn run_host(
+    transport: &Transport,
+    program: &str,
+    args: &[&str],
+) -> Result<Output, DockerError> {
+    let output = transport
+        .host_command(program, args)
+        .output()
+        .map_err(DockerError::Io)?;
+
+    if output.status.success() {
+        Ok(output)
+    } else {
+        let command = transport.describe_host_command(program, args);
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         Err(DockerError::CommandFailed { command, stderr })
     }

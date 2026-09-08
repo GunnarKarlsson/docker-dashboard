@@ -18,7 +18,6 @@ const LOG_ERRORS_SHARE: f32 = 1.5;
 pub enum PanelId {
     Contexts,
     Disk,
-    HostRam,
     HostDf,
     LocalImages,
     EcrImages,
@@ -37,8 +36,7 @@ impl PanelId {
         match self {
             PanelId::Contexts => "Contexts",
             PanelId::Disk => "Disk",
-            PanelId::HostRam => "RAM",
-            PanelId::HostDf => "Host / Docker df",
+            PanelId::HostDf => "Storage Details",
             PanelId::LocalImages => "Local Images",
             PanelId::EcrImages => "ECR Images",
             PanelId::Containers => "Containers",
@@ -56,7 +54,6 @@ impl PanelId {
         Some(match self {
             PanelId::Contexts => theme::icons::device(),
             PanelId::Disk | PanelId::HostDf => theme::icons::disc(),
-            PanelId::HostRam => theme::icons::ram(),
             PanelId::LocalImages | PanelId::RemoteImages | PanelId::EcrImages => {
                 theme::icons::images()
             }
@@ -76,9 +73,7 @@ pub fn create_default_tree() -> Tree<PanelId> {
 
     let contexts = tiles.insert_pane(PanelId::Contexts);
     let disk = tiles.insert_pane(PanelId::Disk);
-    let host_ram = tiles.insert_pane(PanelId::HostRam);
-    let gauges = tiles.insert_horizontal_tile(vec![disk, host_ram]);
-    let contexts_block = tiles.insert_vertical_tile(vec![contexts, gauges]);
+    let contexts_block = tiles.insert_vertical_tile(vec![contexts, disk]);
     let host_df = tiles.insert_pane(PanelId::HostDf);
     let local_images = tiles.insert_pane(PanelId::LocalImages);
     let ecr_images = tiles.insert_pane(PanelId::EcrImages);
@@ -122,12 +117,7 @@ pub fn create_default_tree() -> Tree<PanelId> {
     set_linear_shares(
         &mut tiles,
         contexts_block,
-        &[(contexts, COL_SHARE), (gauges, COL_SHARE)],
-    );
-    set_linear_shares(
-        &mut tiles,
-        gauges,
-        &[(disk, COL_SHARE), (host_ram, COL_SHARE)],
+        &[(contexts, COL_SHARE), (disk, COL_SHARE)],
     );
     set_linear_shares(
         &mut tiles,
@@ -200,6 +190,16 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
         match pane {
             PanelId::Contexts => {
                 panels::contexts_panel(ui, self.app, pane.icon());
+            }
+            PanelId::Disk => {
+                ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
+                    panels::disk_panel(ui, self.app);
+                });
+            }
+            PanelId::HostDf => {
+                ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
+                    panels::host_df_panel(ui, self.app);
+                });
             }
             _ => {
                 ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {

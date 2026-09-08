@@ -1,4 +1,5 @@
 mod app;
+mod format;
 mod layout;
 #[cfg(target_os = "macos")]
 mod macos;

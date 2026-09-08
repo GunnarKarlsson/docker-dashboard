@@ -1,14 +1,18 @@
 //! Application state: context selection drives pollers.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use docker_client::{Docker, HeartbeatPoller, HeartbeatUpdate, Transport};
+use docker_client::{
+    fetch_host_stats, Docker, HeartbeatPoller, HeartbeatUpdate, HostStats, Poller, SystemDf,
+    SystemDfVerbose, Transport,
+};
 use eframe::egui;
 
-use std::time::Instant;
-
 const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
+const SYSTEM_DF_INTERVAL: Duration = Duration::from_secs(10);
+const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
+const HOST_STATS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Which context is driving the rest of the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +50,20 @@ pub struct App {
     pub contexts_refreshed_at: Option<Instant>,
     pub selected_context: Option<ContextId>,
     pub heartbeat_error: Option<String>,
+    pub system_df: Option<SystemDf>,
+    pub system_df_error: Option<String>,
+    pub system_df_verbose: Option<SystemDfVerbose>,
+    pub system_df_verbose_error: Option<String>,
+    pub host_stats: Option<HostStats>,
+    pub host_stats_error: Option<String>,
     heartbeat_rx: Option<Receiver<HeartbeatUpdate>>,
     heartbeat_poller: Option<HeartbeatPoller>,
+    system_df_rx: Option<Receiver<Result<SystemDf, String>>>,
+    system_df_poller: Option<Poller>,
+    system_df_verbose_rx: Option<Receiver<Result<SystemDfVerbose, String>>>,
+    system_df_verbose_poller: Option<Poller>,
+    host_stats_rx: Option<Receiver<Result<HostStats, String>>>,
+    host_stats_poller: Option<Poller>,
 }
 
 impl App {
@@ -57,8 +73,20 @@ impl App {
             contexts_refreshed_at: None,
             selected_context: None,
             heartbeat_error: None,
+            system_df: None,
+            system_df_error: None,
+            system_df_verbose: None,
+            system_df_verbose_error: None,
+            host_stats: None,
+            host_stats_error: None,
             heartbeat_rx: None,
             heartbeat_poller: None,
+            system_df_rx: None,
+            system_df_poller: None,
+            system_df_verbose_rx: None,
+            system_df_verbose_poller: None,
+            host_stats_rx: None,
+            host_stats_poller: None,
         };
         app.refresh_contexts();
         app
@@ -124,6 +152,27 @@ impl App {
         if self.drain_heartbeat() {
             needs_repaint = true;
         }
+        if drain_result(
+            &self.system_df_rx,
+            &mut self.system_df,
+            &mut self.system_df_error,
+        ) {
+            needs_repaint = true;
+        }
+        if drain_result(
+            &self.system_df_verbose_rx,
+            &mut self.system_df_verbose,
+            &mut self.system_df_verbose_error,
+        ) {
+            needs_repaint = true;
+        }
+        if drain_result(
+            &self.host_stats_rx,
+            &mut self.host_stats,
+            &mut self.host_stats_error,
+        ) {
+            needs_repaint = true;
+        }
         if needs_repaint {
             ctx.request_repaint();
         }
@@ -137,12 +186,42 @@ impl App {
     }
 
     fn start_streams(&mut self, id: ContextId) {
-        match HeartbeatPoller::spawn(id.transport()) {
+        let transport = id.transport();
+
+        match HeartbeatPoller::spawn(transport.clone()) {
             Ok((rx, poller)) => {
                 self.heartbeat_rx = Some(rx);
                 self.heartbeat_poller = Some(poller);
             }
             Err(err) => self.heartbeat_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport.clone(), SYSTEM_DF_INTERVAL, Docker::system_df) {
+            Ok((rx, poller)) => {
+                self.system_df_rx = Some(rx);
+                self.system_df_poller = Some(poller);
+            }
+            Err(err) => self.system_df_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(
+            transport.clone(),
+            SYSTEM_DF_VERBOSE_INTERVAL,
+            Docker::system_df_verbose,
+        ) {
+            Ok((rx, poller)) => {
+                self.system_df_verbose_rx = Some(rx);
+                self.system_df_verbose_poller = Some(poller);
+            }
+            Err(err) => self.system_df_verbose_error = Some(err.user_message()),
+        }
+
+        match Poller::spawn(transport, HOST_STATS_INTERVAL, fetch_host_stats) {
+            Ok((rx, poller)) => {
+                self.host_stats_rx = Some(rx);
+                self.host_stats_poller = Some(poller);
+            }
+            Err(err) => self.host_stats_error = Some(err.user_message()),
         }
     }
 
@@ -151,10 +230,28 @@ impl App {
             poller.stop();
         }
         self.heartbeat_rx = None;
+        if let Some(poller) = self.system_df_poller.take() {
+            poller.stop();
+        }
+        self.system_df_rx = None;
+        if let Some(poller) = self.system_df_verbose_poller.take() {
+            poller.stop();
+        }
+        self.system_df_verbose_rx = None;
+        if let Some(poller) = self.host_stats_poller.take() {
+            poller.stop();
+        }
+        self.host_stats_rx = None;
     }
 
     fn clear_context_data(&mut self) {
         self.heartbeat_error = None;
+        self.system_df = None;
+        self.system_df_error = None;
+        self.system_df_verbose = None;
+        self.system_df_verbose_error = None;
+        self.host_stats = None;
+        self.host_stats_error = None;
     }
 
     fn drain_heartbeat(&mut self) -> bool {
@@ -178,4 +275,26 @@ impl App {
         }
         changed
     }
+}
+
+fn drain_result<T>(
+    rx: &Option<Receiver<Result<T, String>>>,
+    value: &mut Option<T>,
+    error: &mut Option<String>,
+) -> bool {
+    let Some(rx) = rx else {
+        return false;
+    };
+    let mut changed = false;
+    while let Ok(update) = rx.try_recv() {
+        changed = true;
+        match update {
+            Ok(next) => {
+                *value = Some(next);
+                *error = None;
+            }
+            Err(message) => *error = Some(message),
+        }
+    }
+    changed
 }

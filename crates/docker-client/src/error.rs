@@ -25,7 +25,7 @@ impl DockerError {
             DockerError::NotFound => {
                 "docker not found on PATH. Install Docker Desktop or the Docker CLI.".to_string()
             }
-            DockerError::Io(err) => format!("Failed to run docker: {err}"),
+            DockerError::Io(err) => format!("Failed to run command: {err}"),
             DockerError::VersionCheckFailed(stderr) => classify_docker_stderr(stderr),
             DockerError::CommandFailed { stderr, .. } => classify_docker_stderr(stderr),
             DockerError::ParseFailed(message) => {

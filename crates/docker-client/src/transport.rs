@@ -19,6 +19,20 @@ impl Transport {
         }
     }
 
+    pub fn describe_host_command(&self, program: &str, args: &[&str]) -> String {
+        let command = if args.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {}", args.join(" "))
+        };
+        match self {
+            Transport::Local => command,
+            Transport::Ssh { user, host } => {
+                format!("ssh -o BatchMode=yes {user}@{host} -- {command}")
+            }
+        }
+    }
+
     pub(crate) fn command(&self, args: &[&str]) -> Command {
         match self {
             Transport::Local => {
@@ -34,6 +48,28 @@ impl Transport {
                     &format!("{user}@{host}"),
                     "--",
                     "docker",
+                ]);
+                command.args(args);
+                command
+            }
+        }
+    }
+
+    pub(crate) fn host_command(&self, program: &str, args: &[&str]) -> Command {
+        match self {
+            Transport::Local => {
+                let mut command = Command::new(program);
+                command.args(args);
+                command
+            }
+            Transport::Ssh { user, host } => {
+                let mut command = Command::new("ssh");
+                command.args([
+                    "-o",
+                    "BatchMode=yes",
+                    &format!("{user}@{host}"),
+                    "--",
+                    program,
                 ]);
                 command.args(args);
                 command
