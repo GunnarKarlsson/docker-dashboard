@@ -95,30 +95,24 @@ pub fn containers_panel(
 
 fn show_filters(ui: &mut egui::Ui, filters: &mut ContainerFilters) {
     ui_elements::filter_row(ui, |ui| {
-        state_toggle(ui, "running", &mut filters.running);
-        state_toggle(ui, "paused", &mut filters.paused);
-        state_toggle(ui, "exited", &mut filters.exited);
-        state_toggle(ui, "created", &mut filters.created);
-        state_toggle(ui, "restarting", &mut filters.restarting);
+        state_toggle(ui, "Running", &mut filters.running);
+        state_toggle(ui, "Paused", &mut filters.paused);
+        state_toggle(ui, "Exited", &mut filters.exited);
+        state_toggle(ui, "Created", &mut filters.created);
+        state_toggle(ui, "Restarting", &mut filters.restarting);
     });
     ui_elements::filter_row(ui, |ui| {
-        ui.label("Name / image");
-        ui.add(
-            egui::TextEdit::singleline(&mut filters.query)
-                .desired_width(140.0)
-                .hint_text("substring"),
-        );
-        ui.label("Project");
-        ui.add(
-            egui::TextEdit::singleline(&mut filters.compose_project)
-                .desired_width(120.0)
-                .hint_text("compose"),
-        );
+        ui.label(filter_text("Name or Image:"));
+        ui.add(egui::TextEdit::singleline(&mut filters.query).desired_width(140.0));
     });
 }
 
+fn filter_text(text: &str) -> egui::RichText {
+    egui::RichText::new(text).size(theme::FONT_BODY)
+}
+
 fn state_toggle(ui: &mut egui::Ui, label: &str, on: &mut bool) {
-    if ui.selectable_label(*on, label).clicked() {
+    if ui.selectable_label(*on, filter_text(label)).clicked() {
         *on = !*on;
     }
 }

@@ -54,7 +54,6 @@ pub struct ContainerFilters {
     pub created: bool,
     pub restarting: bool,
     pub query: String,
-    pub compose_project: String,
 }
 
 impl Default for ContainerFilters {
@@ -66,7 +65,6 @@ impl Default for ContainerFilters {
             created: true,
             restarting: true,
             query: String::new(),
-            compose_project: String::new(),
         }
     }
 }
@@ -83,14 +81,6 @@ impl ContainerFilters {
             let image = container.image.to_ascii_lowercase();
             if !name.contains(&query) && !image.contains(&query) {
                 return false;
-            }
-        }
-
-        let project = self.compose_project.trim().to_ascii_lowercase();
-        if !project.is_empty() {
-            match container.compose_project() {
-                Some(current) if current.to_ascii_lowercase().contains(&project) => {}
-                _ => return false,
             }
         }
 
