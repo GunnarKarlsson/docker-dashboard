@@ -36,6 +36,8 @@ pub mod colors {
     pub const SELECTION: Color32 = Color32::from_rgb(72, 78, 88);
 
     pub const ERROR: Color32 = Color32::from_rgb(220, 80, 80);
+    /// Reachable context indicator.
+    pub const REACHABLE: Color32 = Color32::from_rgb(80, 200, 120);
     pub const LOG_ERROR: Color32 = ERROR;
     pub const LOG_WARNING: Color32 = Color32::from_rgb(220, 180, 60);
     pub const LOG_INFO: Color32 = Color32::from_rgb(120, 180, 255);

@@ -20,9 +20,9 @@ struct TerminalApp {
 }
 
 impl TerminalApp {
-    fn new(docker_error: Option<String>) -> Self {
+    fn new() -> Self {
         Self {
-            inner: App::new(docker_error),
+            inner: App::new(),
             layout_tree: layout::create_default_tree(),
         }
     }
@@ -53,11 +53,8 @@ fn main() -> eframe::Result<()> {
     init_tracing();
     tracing::info!("docker-terminal started");
 
-    let docker_error = Docker::check_available()
-        .err()
-        .map(|err| err.user_message());
-    if let Some(err) = &docker_error {
-        tracing::warn!("docker not available: {err}");
+    if let Err(err) = Docker::check_available() {
+        tracing::warn!("docker not available: {}", err.user_message());
     }
     if let Err(err) = Compose::check_available() {
         tracing::warn!("compose not available: {err}");
@@ -88,7 +85,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             theme::configure(&cc.egui_ctx);
-            Ok(Box::new(TerminalApp::new(docker_error)))
+            Ok(Box::new(TerminalApp::new()))
         }),
     )
 }

@@ -197,13 +197,16 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, _tile_id: TileId, pane: &mut PanelId) -> UiResponse {
-        ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
-            if *pane == PanelId::Contexts {
-                panels::contexts_placeholder(ui, self.app);
-            } else {
-                panels::placeholder(ui);
+        match pane {
+            PanelId::Contexts => {
+                panels::contexts_panel(ui, self.app, pane.icon());
             }
-        });
+            _ => {
+                ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
+                    panels::placeholder(ui);
+                });
+            }
+        }
         UiResponse::None
     }
 }
