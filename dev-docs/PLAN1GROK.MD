@@ -10,6 +10,16 @@ One selected container or compose service drives logs, inspect, ports, mounts, a
 
 Keep the first version read-heavy. Footer buttons for Refresh / Stream / Timestamp, same as the Android app. Destructive actions (prune, rm, down -v) can wait or sit behind an explicit confirm.
 
+Local testdata
+
+For dashboard development, do not wait on a real EC2 stack. A fast Alpine Compose project lives at testdata/mock-stack/ (project name dd-mock): api (healthy + mixed logs, port 18080), worker (crash/restart), db (volume), unhealthy (failing healthcheck). No compilers in those images.
+
+```bash
+docker compose -f testdata/mock-stack/docker-compose.yml up -d --build
+```
+
+Parser samples (docker version JSON, etc.) also belong under testdata/.
+
 Suggested crate split, matching your current layout:
 
 docker-client — wrap docker … locally and ssh host docker …

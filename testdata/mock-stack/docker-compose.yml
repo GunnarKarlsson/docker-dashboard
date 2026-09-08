@@ -1,0 +1,35 @@
+name: dd-mock
+
+services:
+  api:
+    build: .
+    command: ["/scripts/api.sh"]
+    ports:
+      - "18080:8080"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["/scripts/worker.sh"]
+    restart: on-failure
+
+  db:
+    build: .
+    command: ["/scripts/db.sh"]
+    volumes:
+      - db-data:/data
+    restart: unless-stopped
+
+  unhealthy:
+    build: .
+    command: ["/scripts/unhealthy.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 1
+      start_period: 1s
+
+volumes:
+  db-data:

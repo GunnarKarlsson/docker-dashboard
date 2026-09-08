@@ -9,3 +9,13 @@ cargo run -p docker-terminal
 ```
 
 Requires Rust 1.88+ (see `rust-toolchain.toml`) and, for live data in later steps, Docker on `PATH`.
+
+## Mock stack
+
+Fast Alpine Compose services (`api`, `worker`, `db`, `unhealthy`) for exercising the dashboard:
+
+```bash
+docker compose -f testdata/mock-stack/docker-compose.yml up -d --build
+```
+
+Tear down with `docker compose -f testdata/mock-stack/docker-compose.yml down -v`. The API is published on `localhost:18080`.
