@@ -2,12 +2,12 @@ use eframe::egui;
 
 use crate::theme;
 
-const DIAMETER_MIN: f32 = 80.0;
-const DIAMETER_MAX: f32 = 160.0;
+const DIAMETER_MIN: f32 = 72.0;
+const DIAMETER_MAX: f32 = 140.0;
 const RADIUS_FRACTION: f32 = 0.38;
 const STROKE_FRACTION: f32 = 0.12;
-const PERCENT_FONT_SIZE: f32 = 28.0;
-const LABEL_FONT_SIZE: f32 = 12.0;
+const PERCENT_FONT_SIZE: f32 = 22.0;
+const LABEL_FONT_SIZE: f32 = 10.0;
 const ARC_STEPS: usize = 64;
 
 pub(crate) fn show_usage_donut(
@@ -22,53 +22,57 @@ pub(crate) fn show_usage_donut(
     let percent = (fraction * 100.0).round() as u32;
     let size = ui.available_size();
 
-    ui.allocate_ui_with_layout(
-        size,
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let diameter = ui.available_height().clamp(DIAMETER_MIN, DIAMETER_MAX);
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(diameter, diameter), egui::Sense::hover());
+    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
+        ui.set_width(ui.available_width());
 
-            let painter = ui.painter_at(rect);
-            let center = rect.center();
-            let radius = diameter * RADIUS_FRACTION;
-            let stroke_width = diameter * STROKE_FRACTION;
+        let label_lines = 1 + extras.len();
+        let label_space = theme::ITEM_SPACING_Y
+            + LABEL_FONT_SIZE * label_lines as f32
+            + theme::ITEM_SPACING_Y * extras.len() as f32;
+        let diameter = ui
+            .available_width()
+            .min((ui.available_height() - label_space).max(DIAMETER_MIN))
+            .clamp(DIAMETER_MIN, DIAMETER_MAX);
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(diameter, diameter), egui::Sense::hover());
 
-            paint_usage_donut(
-                &painter,
-                center,
-                radius,
-                stroke_width,
-                fraction,
-                track_color,
-                used_color,
+        let painter = ui.painter_at(rect);
+        let center = rect.center();
+        let radius = diameter * RADIUS_FRACTION;
+        let stroke_width = diameter * STROKE_FRACTION;
+        let percent_size = PERCENT_FONT_SIZE * (diameter / 120.0).clamp(0.85, 1.15);
+
+        paint_usage_donut(
+            &painter,
+            center,
+            radius,
+            stroke_width,
+            fraction,
+            track_color,
+            used_color,
+        );
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            format!("{percent}%"),
+            egui::FontId::proportional(percent_size),
+            theme::colors::OFF_WHITE,
+        );
+
+        ui.add_space(theme::ITEM_SPACING_Y);
+        ui.label(
+            egui::RichText::new(format!("{used_label} / {total_label}"))
+                .color(theme::colors::LOG_DEBUG)
+                .size(LABEL_FONT_SIZE),
+        );
+        for extra in extras {
+            ui.label(
+                egui::RichText::new(*extra)
+                    .color(theme::colors::LOG_DEBUG)
+                    .size(LABEL_FONT_SIZE),
             );
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                format!("{percent}%"),
-                egui::FontId::proportional(PERCENT_FONT_SIZE),
-                theme::colors::OFF_WHITE,
-            );
-
-            ui.add_space(theme::ITEM_SPACING_X);
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{used_label} / {total_label}"))
-                        .color(theme::colors::LOG_DEBUG)
-                        .size(LABEL_FONT_SIZE),
-                );
-                for extra in extras {
-                    ui.label(
-                        egui::RichText::new(*extra)
-                            .color(theme::colors::LOG_DEBUG)
-                            .size(LABEL_FONT_SIZE),
-                    );
-                }
-            });
-        },
-    );
+        }
+    });
 }
 
 fn paint_usage_donut(

@@ -7,7 +7,9 @@ use crate::theme;
 use crate::ui_elements;
 
 const COL_SHARE: f32 = 1.0;
-const CONTEXTS_SHARE: f32 = 2.0;
+const CONTEXTS_SHARE: f32 = 1.25;
+const CONTEXTS_ROW_SHARE: f32 = 1.25;
+const DISK_ROW_SHARE: f32 = 1.0;
 const HOST_DF_SHARE: f32 = 1.5;
 const CONTAINERS_SHARE: f32 = 2.0;
 const COMPOSE_SHARE: f32 = 1.5;
@@ -73,7 +75,7 @@ pub fn create_default_tree() -> Tree<PanelId> {
 
     let contexts = tiles.insert_pane(PanelId::Contexts);
     let disk = tiles.insert_pane(PanelId::Disk);
-    let contexts_block = tiles.insert_vertical_tile(vec![contexts, disk]);
+    let contexts_block = tiles.insert_horizontal_tile(vec![contexts, disk]);
     let host_df = tiles.insert_pane(PanelId::HostDf);
     let local_images = tiles.insert_pane(PanelId::LocalImages);
     let ecr_images = tiles.insert_pane(PanelId::EcrImages);
@@ -117,7 +119,7 @@ pub fn create_default_tree() -> Tree<PanelId> {
     set_linear_shares(
         &mut tiles,
         contexts_block,
-        &[(contexts, COL_SHARE), (disk, COL_SHARE)],
+        &[(contexts, CONTEXTS_ROW_SHARE), (disk, DISK_ROW_SHARE)],
     );
     set_linear_shares(
         &mut tiles,
@@ -140,7 +142,7 @@ pub fn create_default_tree() -> Tree<PanelId> {
         ],
     );
 
-    Tree::new("docker_dashboard_tiles", root, tiles)
+    Tree::new("docker_dashboard_tiles_v2", root, tiles)
 }
 
 fn set_linear_shares(
