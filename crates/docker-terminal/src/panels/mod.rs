@@ -2,8 +2,15 @@ mod contexts;
 
 use eframe::egui;
 
+use crate::app::App;
+use crate::ui_elements;
+
 pub use contexts::contexts_panel;
 
-pub fn placeholder(ui: &mut egui::Ui) {
-    ui.label("No context selected");
+pub fn placeholder(ui: &mut egui::Ui, app: &App) {
+    if app.selected_context.is_none() {
+        ui.label("No context selected");
+        return;
+    }
+    ui_elements::panel_loading(ui);
 }

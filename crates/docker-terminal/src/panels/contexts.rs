@@ -36,6 +36,7 @@ fn show_contexts_body(ui: &mut egui::Ui, app: &mut App) {
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                 show_local_row(ui, app);
+                show_ssh_stub_row(ui);
             });
         });
 }
@@ -56,15 +57,35 @@ fn show_local_row(ui: &mut egui::Ui, app: &mut App) {
     };
 
     if reachable {
-        let response = context_row(ui, true, selected, theme::colors::REACHABLE, &detail);
+        let response = context_row(
+            ui,
+            true,
+            selected,
+            theme::colors::REACHABLE,
+            "Local",
+            &detail,
+        );
         if response.clicked() && !selected {
             app.select_context(ContextId::Local);
         }
     } else {
         ui.add_enabled_ui(false, |ui| {
-            context_row(ui, false, false, theme::colors::ERROR, &detail);
+            context_row(ui, false, false, theme::colors::ERROR, "Local", &detail);
         });
     }
+}
+
+fn show_ssh_stub_row(ui: &mut egui::Ui) {
+    ui.add_enabled_ui(false, |ui| {
+        context_row(
+            ui,
+            false,
+            false,
+            theme::colors::ERROR,
+            "Remote SSH",
+            "No remote context configured",
+        );
+    });
 }
 
 fn context_row(
@@ -72,6 +93,7 @@ fn context_row(
     clickable: bool,
     selected: bool,
     dot: egui::Color32,
+    name: &str,
     detail: &str,
 ) -> egui::Response {
     let fill = if selected {
@@ -94,7 +116,7 @@ fn context_row(
             ui.horizontal(|ui| {
                 ui.colored_label(dot, "●");
                 ui.vertical(|ui| {
-                    ui.label(egui::RichText::new("Local").color(text));
+                    ui.label(egui::RichText::new(name).color(text));
                     ui.label(egui::RichText::new(detail).color(text));
                 });
             });

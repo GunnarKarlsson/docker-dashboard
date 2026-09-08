@@ -203,7 +203,7 @@ impl Behavior<PanelId> for AppTilesBehavior<'_> {
             }
             _ => {
                 ui_elements::panel(ui, pane.icon(), pane.title(), |ui| {
-                    panels::placeholder(ui);
+                    panels::placeholder(ui, self.app);
                 });
             }
         }

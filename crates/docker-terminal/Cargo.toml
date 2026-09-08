@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 compose-client = { path = "../compose-client" }
+crossbeam-channel.workspace = true
 docker-client = { path = "../docker-client" }
 ecr-client = { path = "../ecr-client" }
 eframe.workspace = true
