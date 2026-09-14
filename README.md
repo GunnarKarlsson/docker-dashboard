@@ -21,8 +21,9 @@ Requires Rust 1.88+ (see `rust-toolchain.toml`) and, for live data in later step
 
 ## Mock stack
 
-Fast Alpine Compose services (`api`, `worker`, `db`, `unhealthy`) for exercising the dashboard. `db` writes into a named volume. `unused` is built but not started so Storage Details has an unused image.
+The project includes mock docker compose services for the purpose of quickly testing new features in development. These services are based on Alpine: `api`, `worker`, `db`, `unhealthy` to trigger difference features on the dashboard during development. `db` writes into a named volume. `unused` is built but not started so Storage Details has an unused image.
 
+How to build and run the mock docker compose services:
 ```bash
 docker compose -f testdata/mock-stack/docker-compose.yml --profile disk build unused
 docker compose -f testdata/mock-stack/docker-compose.yml up -d --build
