@@ -4,6 +4,7 @@ mod layout;
 #[cfg(target_os = "macos")]
 mod macos;
 mod panels;
+mod selection;
 mod theme;
 mod ui_elements;
 

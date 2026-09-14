@@ -1,6 +1,16 @@
 # Docker Dashboard
 
+![Rust](https://img.shields.io/badge/rust-1.88.0-orange?logo=rust)
+![Docker](https://img.shields.io/badge/docker-required-2496ED?logo=docker&logoColor=white)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/GunnarKarlsson/docker-dashboard)](https://github.com/GunnarKarlsson/docker-dashboard/releases/latest)
+[![Stars](https://img.shields.io/github/stars/GunnarKarlsson/docker-dashboard)](https://github.com/GunnarKarlsson/docker-dashboard/stargazers)
+
+-- WORK IN PROGRESS --
+
 A Dashboard written in Rust using egui for viewing Docker hosts, containers, images, and Compose data in a single window.
+
+![Docker Dashboard](screenshot1.png)
 
 ## Run
 
@@ -50,4 +60,14 @@ AI_PROVIDER_MODEL=deepseek-v4-pro
 ```
 
 The provider should accept [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create): `POST {AI_PROVIDER_BASE_URL}/chat/completions` (include `/v1` in the base URL if that is part of the path).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report vulnerabilities privately.
+
+## License
+
+Copyright (c) 2026 Gunnar Karlsson. Licensed under the [MIT License](LICENSE).
+
+The UI uses JetBrains Mono Nerd Font (SIL Open Font License) from `crates/docker-terminal/assets/fonts`. Panel icons include Font Awesome Free icons (CC BY 4.0).
 

@@ -15,6 +15,8 @@ use docker_client::{
 };
 use eframe::egui;
 
+use crate::selection::{self, AppMode, Selection};
+
 const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
 const SYSTEM_DF_INTERVAL: Duration = Duration::from_secs(10);
 const SYSTEM_DF_VERBOSE_INTERVAL: Duration = Duration::from_secs(20);
@@ -172,6 +174,10 @@ impl Default for InsightState {
 pub struct App {
     pub local: LocalContext,
     pub contexts_refreshed_at: Option<Instant>,
+    /// Investigate vs Runtime. Header toggle lands in a later step.
+    #[allow(dead_code)]
+    pub mode: AppMode,
+    pub selection: Selection,
     pub selected_context: Option<ContextId>,
     pub heartbeat_error: Option<String>,
     pub system_df: Option<SystemDf>,
@@ -255,6 +261,8 @@ impl App {
         let mut app = Self {
             local: LocalContext::unreachable("Not checked"),
             contexts_refreshed_at: None,
+            mode: AppMode::Investigate,
+            selection: Selection::None,
             selected_context: None,
             heartbeat_error: None,
             system_df: None,
@@ -648,6 +656,7 @@ impl App {
         self.containers_error = None;
         self.selected_container = None;
         self.selected_compose_service = None;
+        self.selection = Selection::None;
         self.compose = None;
         self.compose_error = None;
         self.compose_missing = false;
@@ -706,6 +715,7 @@ impl App {
                 .find(|container| container.id == id)
                 .and_then(|container| container.compose_service().map(str::to_string))
         });
+        self.selection = self.selection_for_container_id(&id);
         self.inspect_target = Some(InspectTarget::Container(id));
         self.sync_log_streams();
         self.sync_inspect_poller();
@@ -713,6 +723,7 @@ impl App {
 
     pub fn select_image(&mut self, id: String) {
         self.selected_image = Some(id.clone());
+        self.selection = Selection::Image { id: id.clone() };
         self.inspect_target = Some(InspectTarget::Image(id));
         self.sync_inspect_poller();
     }
@@ -720,8 +731,16 @@ impl App {
     pub fn toggle_compose_service(&mut self, name: &str) {
         if self.selected_compose_service.as_deref() == Some(name) {
             self.selected_compose_service = None;
+            self.selection = self
+                .selected_container
+                .as_ref()
+                .map(|id| Selection::Container { id: id.clone() })
+                .unwrap_or(Selection::None);
         } else {
             self.selected_compose_service = Some(name.to_string());
+            self.selection = Selection::Service {
+                name: name.to_string(),
+            };
             if let Some(id) = self.container_id_for_service(name) {
                 self.selected_container = Some(id.clone());
                 self.inspect_target = Some(InspectTarget::Container(id));
@@ -729,6 +748,35 @@ impl App {
             }
         }
         self.sync_log_streams();
+    }
+
+    #[allow(dead_code)]
+    pub fn selected_service_name(&self) -> Option<&str> {
+        self.selection
+            .service_name()
+            .or(self.selected_compose_service.as_deref())
+    }
+
+    #[allow(dead_code)]
+    pub fn containers_for_selected_service(&self) -> Vec<&Container> {
+        let Some(name) = self.selected_service_name() else {
+            return Vec::new();
+        };
+        self.containers
+            .as_deref()
+            .map(|containers| selection::containers_for_service(containers, name))
+            .unwrap_or_default()
+    }
+
+    #[allow(dead_code)]
+    pub fn project_containers(&self) -> Vec<&Container> {
+        let Some(project) = self.compose.as_ref() else {
+            return Vec::new();
+        };
+        self.containers
+            .as_deref()
+            .map(|containers| selection::project_containers(containers, &project.name))
+            .unwrap_or_default()
     }
 
     pub fn stats_display_name(&self, stats: &ContainerStats) -> String {
@@ -1020,6 +1068,9 @@ impl App {
             .is_some_and(|containers| containers.iter().any(|container| container.id == id));
         if !still_present {
             self.selected_container = None;
+            if matches!(&self.selection, Selection::Container { id: selected } if *selected == id) {
+                self.selection = Selection::None;
+            }
             if matches!(&self.inspect_target, Some(InspectTarget::Container(target)) if *target == id)
             {
                 self.inspect_target = None;
@@ -1040,6 +1091,9 @@ impl App {
         });
         if !still_present {
             self.selected_image = None;
+            if matches!(&self.selection, Selection::Image { id: selected } if *selected == id) {
+                self.selection = Selection::None;
+            }
             if matches!(&self.inspect_target, Some(InspectTarget::Image(target)) if *target == id) {
                 self.inspect_target = None;
                 self.inspect = None;
@@ -1084,15 +1138,37 @@ impl App {
     }
 
     fn prune_selected_compose_service(&mut self) {
-        let Some(name) = &self.selected_compose_service else {
+        let Some(name) = self.selected_compose_service.clone() else {
             return;
         };
         let still_present = self
             .compose
             .as_ref()
-            .is_some_and(|project| project.services.iter().any(|service| service.name == *name));
+            .is_some_and(|project| project.services.iter().any(|service| service.name == name));
         if !still_present {
             self.selected_compose_service = None;
+            if matches!(&self.selection, Selection::Service { name: selected } if *selected == name)
+            {
+                self.selection = self
+                    .selected_container
+                    .as_ref()
+                    .map(|id| Selection::Container { id: id.clone() })
+                    .unwrap_or(Selection::None);
+            }
+        }
+    }
+
+    fn selection_for_container_id(&self, id: &str) -> Selection {
+        match self.containers.as_ref().and_then(|containers| {
+            containers
+                .iter()
+                .find(|container| container.id == id)
+                .and_then(Container::compose_service)
+        }) {
+            Some(name) => Selection::Service {
+                name: name.to_string(),
+            },
+            None => Selection::Container { id: id.to_string() },
         }
     }
 
@@ -1231,5 +1307,143 @@ fn prune_excluded_lines(buffer: &mut VecDeque<LogLine>, excluded: &HashSet<Strin
 fn trim_buffer(buffer: &mut VecDeque<LogLine>) {
     while buffer.len() > MAX_LOG_LINES {
         buffer.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use compose_client::{ComposeProject, ComposeService, ProjectStatus};
+    use docker_client::Container;
+
+    use super::*;
+
+    fn container(id: &str, names: &str, labels: &str) -> Container {
+        Container {
+            id: id.into(),
+            names: names.into(),
+            image: "dd-mock".into(),
+            state: "running".into(),
+            status: "Up".into(),
+            ports: String::new(),
+            created_at: String::new(),
+            running_for: String::new(),
+            labels: labels.into(),
+        }
+    }
+
+    fn compose_project(services: &[&str]) -> ComposeProject {
+        ComposeProject {
+            name: "dd-mock".into(),
+            config_file: String::new(),
+            working_dir: String::new(),
+            status: ProjectStatus::Running,
+            status_label: "running".into(),
+            services: services
+                .iter()
+                .map(|name| ComposeService {
+                    name: (*name).into(),
+                    container_id: None,
+                    image: String::new(),
+                    desired: 1,
+                    current: "running".into(),
+                    health: String::new(),
+                    restarts: None,
+                    ports: String::new(),
+                    depends_on: String::new(),
+                })
+                .collect(),
+            resolved_services: services.iter().map(|name| (*name).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn starts_in_investigate_with_no_selection() {
+        let app = App::new();
+        assert_eq!(app.mode, AppMode::Investigate);
+        assert_eq!(app.selection, Selection::None);
+    }
+
+    #[test]
+    fn selecting_compose_container_selects_the_service() {
+        let mut app = App::new();
+        app.containers = Some(vec![container(
+            "abc",
+            "/dd-mock-worker-1",
+            "com.docker.compose.project=dd-mock,com.docker.compose.service=worker",
+        )]);
+        app.select_container("abc".into());
+
+        assert_eq!(app.selected_container.as_deref(), Some("abc"));
+        assert_eq!(app.selected_compose_service.as_deref(), Some("worker"));
+        assert_eq!(
+            app.selection,
+            Selection::Service {
+                name: "worker".into()
+            }
+        );
+        assert_eq!(app.selected_service_name(), Some("worker"));
+        assert_eq!(app.containers_for_selected_service().len(), 1);
+    }
+
+    #[test]
+    fn selecting_unlabeled_container_selects_the_container() {
+        let mut app = App::new();
+        app.containers = Some(vec![container("abc", "/orphan", "")]);
+        app.select_container("abc".into());
+
+        assert_eq!(app.selection, Selection::Container { id: "abc".into() });
+        assert!(app.selected_service_name().is_none());
+        assert!(app.containers_for_selected_service().is_empty());
+    }
+
+    #[test]
+    fn toggling_compose_service_updates_selection() {
+        let mut app = App::new();
+        app.containers = Some(vec![container(
+            "abc",
+            "/dd-mock-api-1",
+            "com.docker.compose.project=dd-mock,com.docker.compose.service=api",
+        )]);
+        app.toggle_compose_service("api");
+        assert_eq!(app.selection, Selection::Service { name: "api".into() });
+
+        app.toggle_compose_service("api");
+        assert!(app.selected_compose_service.is_none());
+        assert_eq!(app.selection, Selection::Container { id: "abc".into() });
+    }
+
+    #[test]
+    fn project_containers_match_compose_labels() {
+        let mut app = App::new();
+        app.compose = Some(compose_project(&["api", "worker"]));
+        app.containers = Some(vec![
+            container(
+                "1",
+                "/dd-mock-api-1",
+                "com.docker.compose.project=dd-mock,com.docker.compose.service=api",
+            ),
+            container("2", "/orphan", ""),
+        ]);
+        let project = app.project_containers();
+        assert_eq!(project.len(), 1);
+        assert_eq!(project[0].id, "1");
+    }
+
+    #[test]
+    fn prune_clears_stale_selection() {
+        let mut app = App::new();
+        app.containers = Some(vec![container("abc", "/orphan", "")]);
+        app.select_container("abc".into());
+        app.containers = Some(Vec::new());
+        app.prune_selected_container();
+        assert!(app.selected_container.is_none());
+        assert_eq!(app.selection, Selection::None);
+
+        app.compose = Some(compose_project(&["worker"]));
+        app.toggle_compose_service("worker");
+        app.compose = Some(compose_project(&[]));
+        app.prune_selected_compose_service();
+        assert!(app.selected_compose_service.is_none());
+        assert_eq!(app.selection, Selection::None);
     }
 }
