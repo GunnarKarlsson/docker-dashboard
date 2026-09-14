@@ -61,6 +61,53 @@ AI_PROVIDER_MODEL=deepseek-v4-pro
 
 The provider should accept [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create): `POST {AI_PROVIDER_BASE_URL}/chat/completions` (include `/v1` in the base URL if that is part of the path).
 
+## Commands used by the app
+
+Every Docker subprocess uses `docker` on `PATH`. Host stats use `sysctl` / `vm_stat` / `uptime` / `df` locally (macOS) or `cat` / `uptime` / `df` (Linux). An SSH transport exists (`ssh -o BatchMode=yes user@host -- docker …`) but the UI currently only selects the local engine.
+
+Pollers retry with +1s backoff after a failed command, capped at 5s. The app does not start, stop, prune, or otherwise mutate Docker state.
+
+### Startup
+
+| Command | When |
+| --- | --- |
+| `docker version` | Availability check on launch |
+| `docker compose version` | Availability check on launch |
+| `docker version --format '{{json .}}'` | Contexts panel, then heartbeat |
+
+### While a context is selected
+
+Selecting Local starts pollers plus one `docker logs -f` process per running or restarting container. Logs and Log Errors each follow the same containers separately.
+
+Streaming (until the context is deselected or the container is replaced):
+
+- `docker logs --tail 200 -f --timestamps <container-id>`
+
+| Command | Interval | Used for |
+| --- | --- | --- |
+| `docker version --format '{{json .}}'` | 5s | Heartbeat / engine version |
+| `docker system df --format '{{json .}}'` | 10s | Disk donut |
+| `docker system df -v --format '{{json .}}'` | 20s | Storage Details |
+| `docker ps -a --format '{{json .}}'` | 2s | Containers |
+| `docker images --format '{{json .}}'` | 10s | Local Images |
+| `docker stats --no-stream --format '{{json .}}'` | 2s | Stats |
+| `docker events --since 30m --until 0s --format '{{json .}}'` with filters `pull`, `create`, `start`, `die`, `oom`, `health_status`, `kill`, `destroy`, `restart` | 5s | Events |
+| `docker inspect <id>` | 3s | Inspect (selected container or image) |
+| `docker volume ls --format '{{json .}}'` | 10s | Volume list (feeds Storage Details) |
+| `docker volume ls -f dangling=true --format '{{.Name}}'` | with volumes | Dangling flag |
+| `docker volume inspect <names…>` | with volumes | Created-at overlay |
+| `docker network ls --format '{{json .}}'` | 10s | Networks |
+| `docker network inspect <ids…>` | with networks | Attachments overlay |
+| `docker compose ls --format json` | 3s | Discover Compose project (prefers `dd-mock`) |
+| `docker compose -f <file> ps -a --format json` | 3s | Compose services (`-p <project>` if no file) |
+| `docker compose -f <file> config --services` | 3s | Resolved service names |
+| `docker compose -f <file> images --format json` | 3s | Compose image tags |
+| `docker inspect <compose-container-ids…>` | 3s | Restart counts / health for Compose |
+| `sysctl -n hw.memsize`, `vm_stat`, `uptime`, `df -kP /` | 5s | Host RAM / load / root disk (macOS) |
+| `cat /proc/meminfo`, `uptime`, `df -kP /` | 5s | Same, on Linux |
+
+Closing the window kills each `docker logs -f` child and signals pollers to stop. A `docker` command already in flight is not killed; it finishes, then the process exits.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report vulnerabilities privately.
