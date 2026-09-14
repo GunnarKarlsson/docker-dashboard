@@ -63,8 +63,7 @@ The provider should accept [OpenAI Chat Completions](https://platform.openai.com
 
 ## Commands used by the app
 
-Every Docker subprocess uses `docker` on `PATH`. Host stats use `sysctl` / `vm_stat` / `uptime` / `df` locally (macOS) or `cat` / `uptime` / `df` (Linux). An SSH transport exists (`ssh -o BatchMode=yes user@host -- docker …`) but the UI currently only selects the local engine.
-
+Every Docker subprocess uses `docker` on `PATH`. 
 Pollers retry with +1s backoff after a failed command, capped at 5s. The app does not start, stop, prune, or otherwise mutate Docker state.
 
 ### Startup
