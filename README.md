@@ -3,7 +3,6 @@
 ![Rust](https://img.shields.io/badge/rust-1.88.0-orange?logo=rust)
 ![Docker](https://img.shields.io/badge/docker-required-2496ED?logo=docker&logoColor=white)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/GunnarKarlsson/docker-dashboard)](https://github.com/GunnarKarlsson/docker-dashboard/releases/latest)
 [![Stars](https://img.shields.io/github/stars/GunnarKarlsson/docker-dashboard)](https://github.com/GunnarKarlsson/docker-dashboard/stargazers)
 
 -- WORK IN PROGRESS --
